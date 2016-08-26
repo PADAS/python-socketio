@@ -38,14 +38,16 @@ class KombuManager(PubSubManager):  # pragma: no cover
     name = 'kombu'
 
     def __init__(self, url='amqp://guest:guest@localhost:5672//',
-                 channel='socketio', write_only=False):
+                 channel='socketio', write_only=False, transport_options=None):
         if kombu is None:
             raise RuntimeError('Kombu package is not installed '
                                '(Run "pip install kombu" in your '
                                'virtualenv).')
         super(KombuManager, self).__init__(channel=channel)
+        self.transport_options = transport_options
         self.url = url
-        self.writer_conn = kombu.Connection(self.url)
+        self.writer_conn = kombu.Connection(self.url,
+                                            transport_options=transport_options)
         self.writer_queue = self._queue(self.writer_conn)
 
     def _queue(self, conn=None):
