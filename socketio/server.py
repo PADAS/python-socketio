@@ -37,11 +37,14 @@ class Server(object):
 
     The Engine.IO configuration supports the following settings:
 
-    :param async_mode: The library used for asynchronous operations. Valid
-                       options are "threading", "eventlet" and "gevent". If
-                       this argument is not given, "eventlet" is tried first,
-                       then "gevent", and finally "threading". The websocket
-                       transport is only supported in "eventlet" mode.
+    :param async_mode: The asynchronous model to use. See the Deployment
+                       section in the documentation for a description of the
+                       available options. Valid async modes are "threading",
+                       "eventlet", "gevent" and "gevent_uwsgi". If this
+                       argument is not given, "eventlet" is tried first, then
+                       "gevent_uwsgi", then "gevent", and finally "threading".
+                       The first async mode that has all its dependencies
+                       installed is then one that is chosen.
     :param ping_timeout: The time in seconds that the client waits for the
                          server to respond before disconnecting.
     :param ping_interval: The interval in seconds at which the client pings
@@ -293,11 +296,13 @@ class Server(object):
                           argument is omitted the default namespace is used.
         """
         namespace = namespace or '/'
-        self.logger.info('Disconnecting %s [%s]', sid, namespace)
-        self._send_packet(sid, packet.Packet(packet.DISCONNECT,
-                                             namespace=namespace))
-        self._trigger_event('disconnect', namespace, sid)
-        self.manager.disconnect(sid, namespace=namespace)
+        if self.manager.is_connected(sid, namespace=namespace):
+            self.logger.info('Disconnecting %s [%s]', sid, namespace)
+            self.manager.pre_disconnect(sid, namespace=namespace)
+            self._send_packet(sid, packet.Packet(packet.DISCONNECT,
+                                                 namespace=namespace))
+            self._trigger_event('disconnect', namespace, sid)
+            self.manager.disconnect(sid, namespace=namespace)
 
     def transport(self, sid):
         """Return the name of the transport used by the client.
