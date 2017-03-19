@@ -30,7 +30,6 @@ class TestServer(unittest.TestCase):
         self.assertEqual(s.eio.on.call_count, 3)
         self.assertEqual(s.binary, True)
         self.assertEqual(s.async_handlers, True)
-        self.assertEqual(mgr.initialize.call_count, 1)
 
     def test_on_event(self, eio):
         s = server.Server()
@@ -47,10 +46,6 @@ class TestServer(unittest.TestCase):
         self.assertEqual(s.handlers['/']['connect'], foo)
         self.assertEqual(s.handlers['/']['disconnect'], bar)
         self.assertEqual(s.handlers['/foo']['disconnect'], bar)
-
-    def test_on_bad_event_name(self, eio):
-        s = server.Server()
-        self.assertRaises(ValueError, s.on, 'two-words')
 
     def test_emit(self, eio):
         mgr = mock.MagicMock()
@@ -184,6 +179,9 @@ class TestServer(unittest.TestCase):
         handler.assert_called_once_with('123', 'environ')
         s.manager.connect.assert_called_once_with('123', '/')
         s.eio.send.assert_called_once_with('123', '0', binary=False)
+        self.assertEqual(mgr.initialize.call_count, 1)
+        s._handle_eio_connect('456', 'environ')
+        self.assertEqual(mgr.initialize.call_count, 1)
 
     def test_handle_connect_namespace(self, eio):
         mgr = mock.MagicMock()
@@ -443,12 +441,17 @@ class TestServer(unittest.TestCase):
         class Dummy(object):
             pass
 
+        class AsyncNS(namespace.Namespace):
+            def is_asyncio_based(self):
+                return True
+
         s = server.Server()
         self.assertRaises(ValueError, s.register_namespace, 123)
         self.assertRaises(ValueError, s.register_namespace, Dummy)
         self.assertRaises(ValueError, s.register_namespace, Dummy())
         self.assertRaises(ValueError, s.register_namespace,
                           namespace.Namespace)
+        self.assertRaises(ValueError, s.register_namespace, AsyncNS())
 
     def test_logger(self, eio):
         s = server.Server(logger=False)

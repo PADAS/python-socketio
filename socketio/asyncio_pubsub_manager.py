@@ -5,11 +5,11 @@ import json
 import pickle
 import six
 
-from .base_manager import BaseManager
+from .asyncio_manager import AsyncManager
 
 
-class PubSubManager(BaseManager):
-    """Manage a client list attached to a pub/sub backend.
+class AsyncPubSubManager(AsyncManager):
+    """Manage a client list attached to a pub/sub backend under asyncio.
 
     This is a base class that enables multiple servers to share the list of
     clients, with the servers communicating events through a pub/sub backend.
@@ -17,27 +17,27 @@ class PubSubManager(BaseManager):
     backend to emit events addressed to Socket.IO clients.
 
     The actual backends must be implemented by subclasses, this class only
-    provides a pub/sub generic framework.
+    provides a pub/sub generic framework for asyncio applications.
 
     :param channel: The channel name on which the server sends and receives
                     notifications.
     """
-    name = 'pubsub'
+    name = 'asyncpubsub'
 
     def __init__(self, channel='socketio', write_only=False):
-        super(PubSubManager, self).__init__()
+        super().__init__()
         self.channel = channel
         self.write_only = write_only
         self.host_id = uuid.uuid4().hex
 
     def initialize(self):
-        super(PubSubManager, self).initialize()
+        super().initialize()
         if not self.write_only:
             self.thread = self.server.start_background_task(self._thread)
         self.server.logger.info(self.name + ' backend initialized.')
 
-    def emit(self, event, data, namespace=None, room=None, skip_sid=None,
-             callback=None, **kwargs):
+    async def emit(self, event, data, namespace=None, room=None, skip_sid=None,
+                   callback=None, **kwargs):
         """Emit a message to a single client, a room, or all the clients
         connected to the namespace.
 
@@ -45,9 +45,11 @@ class PubSubManager(BaseManager):
         that are connected through the message queue.
 
         The parameters are the same as in :meth:`.Server.emit`.
+
+        Note: this method is a coroutine.
         """
         if kwargs.get('ignore_queue'):
-            return super(PubSubManager, self).emit(
+            return await super().emit(
                 event, data, namespace=namespace, room=room, skip_sid=skip_sid,
                 callback=callback)
         namespace = namespace or '/'
@@ -61,15 +63,15 @@ class PubSubManager(BaseManager):
             callback = (room, namespace, id)
         else:
             callback = None
-        self._publish({'method': 'emit', 'event': event, 'data': data,
-                       'namespace': namespace, 'room': room,
-                       'skip_sid': skip_sid, 'callback': callback})
+        await self._publish({'method': 'emit', 'event': event, 'data': data,
+                             'namespace': namespace, 'room': room,
+                             'skip_sid': skip_sid, 'callback': callback})
 
-    def close_room(self, room, namespace=None):
-        self._publish({'method': 'close_room', 'room': room,
-                       'namespace': namespace or '/'})
+    async def close_room(self, room, namespace=None):
+        await self._publish({'method': 'close_room', 'room': room,
+                             'namespace': namespace or '/'})
 
-    def _publish(self, data):
+    async def _publish(self, data):
         """Publish a message on the Socket.IO channel.
 
         This method needs to be implemented by the different subclasses that
@@ -78,7 +80,7 @@ class PubSubManager(BaseManager):
         raise NotImplementedError('This method must be implemented in a '
                                   'subclass.')  # pragma: no cover
 
-    def _listen(self):
+    async def _listen(self):
         """Return the next message published on the Socket.IO channel,
         blocking until a message is available.
 
@@ -88,7 +90,7 @@ class PubSubManager(BaseManager):
         raise NotImplementedError('This method must be implemented in a '
                                   'subclass.')  # pragma: no cover
 
-    def _handle_emit(self, message):
+    async def _handle_emit(self, message):
         # Events with callbacks are very tricky to handle across hosts
         # Here in the receiving end we set up a local callback that preserves
         # the callback host and id from the sender
@@ -98,13 +100,13 @@ class PubSubManager(BaseManager):
                                *remote_callback)
         else:
             callback = None
-        super(PubSubManager, self).emit(message['event'], message['data'],
-                                        namespace=message.get('namespace'),
-                                        room=message.get('room'),
-                                        skip_sid=message.get('skip_sid'),
-                                        callback=callback)
+        await super().emit(message['event'], message['data'],
+                           namespace=message.get('namespace'),
+                           room=message.get('room'),
+                           skip_sid=message.get('skip_sid'),
+                           callback=callback)
 
-    def _handle_callback(self, message):
+    async def _handle_callback(self, message):
         if self.host_id == message.get('host_id'):
             try:
                 sid = message['sid']
@@ -113,21 +115,28 @@ class PubSubManager(BaseManager):
                 args = message['args']
             except KeyError:
                 return
-            self.trigger_callback(sid, namespace, id, args)
+            await self.trigger_callback(sid, namespace, id, args)
 
-    def _return_callback(self, host_id, sid, namespace, callback_id, *args):
+    async def _return_callback(self, host_id, sid, namespace, callback_id,
+                               *args):
         # When an event callback is received, the callback is returned back
         # the sender, which is identified by the host_id
-        self._publish({'method': 'callback', 'host_id': host_id,
-                       'sid': sid, 'namespace': namespace, 'id': callback_id,
-                       'args': args})
+        await self._publish({'method': 'callback', 'host_id': host_id,
+                             'sid': sid, 'namespace': namespace,
+                             'id': callback_id, 'args': args})
 
-    def _handle_close_room(self, message):
-        super(PubSubManager, self).close_room(
+    async def _handle_close_room(self, message):
+        await super().close_room(
             room=message.get('room'), namespace=message.get('namespace'))
 
-    def _thread(self):
-        for message in self._listen():
+    async def _thread(self):
+        while True:
+            try:
+                message = await self._listen()
+            except:
+                import traceback
+                traceback.print_exc()
+                break
             data = None
             if isinstance(message, dict):
                 data = message
@@ -144,8 +153,8 @@ class PubSubManager(BaseManager):
                         pass
             if data and 'method' in data:
                 if data['method'] == 'emit':
-                    self._handle_emit(data)
+                    await self._handle_emit(data)
                 elif data['method'] == 'callback':
-                    self._handle_callback(data)
+                    await self._handle_callback(data)
                 elif data['method'] == 'close_room':
-                    self._handle_close_room(data)
+                    await self._handle_close_room(data)

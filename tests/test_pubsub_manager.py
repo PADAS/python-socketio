@@ -16,7 +16,8 @@ class TestBaseManager(unittest.TestCase):
         mock_server = mock.MagicMock()
         self.pm = pubsub_manager.PubSubManager()
         self.pm._publish = mock.MagicMock()
-        self.pm.initialize(mock_server)
+        self.pm.set_server(mock_server)
+        self.pm.initialize()
 
     def test_default_init(self):
         self.assertEqual(self.pm.channel, 'socketio')
@@ -32,7 +33,8 @@ class TestBaseManager(unittest.TestCase):
     def test_write_only_init(self):
         mock_server = mock.MagicMock()
         pm = pubsub_manager.PubSubManager(write_only=True)
-        pm.initialize(mock_server)
+        pm.set_server(mock_server)
+        pm.initialize()
         self.assertEqual(pm.channel, 'socketio')
         self.assertEqual(len(pm.host_id), 32)
         self.assertEqual(pm.server.start_background_task.call_count, 0)
@@ -84,6 +86,14 @@ class TestBaseManager(unittest.TestCase):
                                return_value='123'):
             self.assertRaises(ValueError, self.pm.emit, 'foo', 'bar',
                               callback='cb')
+
+    def test_emit_with_ignore_queue(self):
+        self.pm.connect('123', '/')
+        self.pm.emit('foo', 'bar', room='123', namespace='/',
+                     ignore_queue=True)
+        self.pm._publish.assert_not_called()
+        self.pm.server._emit_internal.assert_called_once_with('123', 'foo',
+                                                              'bar', '/', None)
 
     def test_close_room(self):
         self.pm.close_room('foo')
@@ -206,12 +216,11 @@ class TestBaseManager(unittest.TestCase):
             yield pickle.dumps({'method': 'close_room', 'value': 'baz'})
             yield 'bad json'
             yield b'bad pickled'
-            raise KeyboardInterrupt
 
         self.pm._listen = mock.MagicMock(side_effect=messages)
         try:
             self.pm._thread()
-        except KeyboardInterrupt:
+        except StopIteration:
             pass
 
         self.pm._handle_emit.assert_called_once_with(

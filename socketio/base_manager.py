@@ -18,8 +18,14 @@ class BaseManager(object):
         self.callbacks = {}
         self.pending_disconnect = {}
 
-    def initialize(self, server):
+    def set_server(self, server):
         self.server = server
+
+    def initialize(self):
+        """Invoked before the first request is received. Subclasses can add
+        their initialization code here.
+        """
+        pass
 
     def get_namespaces(self):
         """Return an iterable with the active namespace names."""
@@ -113,7 +119,7 @@ class BaseManager(object):
         return r
 
     def emit(self, event, data, namespace, room=None, skip_sid=None,
-             callback=None):
+             callback=None, **kwargs):
         """Emit a message to a single client, a room, or all the clients
         connected to the namespace."""
         if namespace not in self.rooms or room not in self.rooms[namespace]:

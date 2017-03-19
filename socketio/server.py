@@ -7,6 +7,8 @@ from . import base_manager
 from . import packet
 from . import namespace
 
+default_logger = logging.getLogger('socketio')
+
 
 class Server(object):
     """A Socket.IO server.
@@ -77,7 +79,7 @@ class Server(object):
             packet.Packet.json = json
             engineio_options['json'] = json
         engineio_options['async_handlers'] = False
-        self.eio = engineio.Server(**engineio_options)
+        self.eio = self._engineio_server_class()(**engineio_options)
         self.eio.on('connect', self._handle_eio_connect)
         self.eio.on('message', self._handle_eio_message)
         self.eio.on('disconnect', self._handle_eio_disconnect)
@@ -87,12 +89,12 @@ class Server(object):
         self.handlers = {}
         self.namespace_handlers = {}
 
-        self._binary_packet = []
+        self._binary_packet = {}
 
         if not isinstance(logger, bool):
             self.logger = logger
         else:
-            self.logger = logging.getLogger('socketio')
+            self.logger = default_logger
             if not logging.root.handlers and \
                     self.logger.level == logging.NOTSET:
                 if logger:
@@ -104,11 +106,15 @@ class Server(object):
         if client_manager is None:
             client_manager = base_manager.BaseManager()
         self.manager = client_manager
+        self.manager.set_server(self)
         self.manager_initialized = False
 
         self.async_handlers = async_handlers
 
         self.async_mode = self.eio.async_mode
+
+    def is_asyncio_based(self):
+        return False
 
     def on(self, event, handler=None, namespace=None):
         """Register an event handler.
@@ -147,8 +153,6 @@ class Server(object):
         client's acknowledgement callback function if it exists. The
         ``'disconnect'`` handler does not take a second argument.
         """
-        if '-' in event:
-            raise ValueError('event names cannot contain hypens')
         namespace = namespace or '/'
 
         def set_handler(handler):
@@ -170,12 +174,14 @@ class Server(object):
         """
         if not isinstance(namespace_handler, namespace.Namespace):
             raise ValueError('Not a namespace instance')
+        if self.is_asyncio_based() != namespace_handler.is_asyncio_based():
+            raise ValueError('Not a valid namespace class for this server')
         namespace_handler._set_server(self)
         self.namespace_handlers[namespace_handler.namespace] = \
             namespace_handler
 
     def emit(self, event, data=None, room=None, skip_sid=None, namespace=None,
-             callback=None):
+             callback=None, **kwargs):
         """Emit a custom event to one or more connected clients.
 
         :param event: The event name. It can be any string. The event names
@@ -200,14 +206,22 @@ class Server(object):
                          that will be passed to the function are those provided
                          by the client. Callback functions can only be used
                          when addressing an individual client.
+        :param ignore_queue: Only used when a message queue is configured. If
+                             set to ``True``, the event is emitted to the
+                             clients directly, without going through the queue.
+                             This is more efficient, but only works when a
+                             single server process is used. It is recommended
+                             to always leave this parameter with its default
+                             value of ``False``.
         """
         namespace = namespace or '/'
         self.logger.info('emitting event "%s" to %s [%s]', event,
                          room or 'all', namespace)
-        self.manager.emit(event, data, namespace, room, skip_sid, callback)
+        self.manager.emit(event, data, namespace, room, skip_sid, callback,
+                          **kwargs)
 
     def send(self, data, room=None, skip_sid=None, namespace=None,
-             callback=None):
+             callback=None, **kwargs):
         """Send a message to one or more connected clients.
 
         This function emits an event with the name ``'message'``. Use
@@ -232,8 +246,16 @@ class Server(object):
                          that will be passed to the function are those provided
                          by the client. Callback functions can only be used
                          when addressing an individual client.
+        :param ignore_queue: Only used when a message queue is configured. If
+                             set to ``True``, the event is emitted to the
+                             clients directly, without going through the queue.
+                             This is more efficient, but only works when a
+                             single server process is used. It is recommended
+                             to always leave this parameter with its default
+                             value of ``False``.
         """
-        self.emit('message', data, room, skip_sid, namespace, callback)
+        self.emit('message', data, room, skip_sid, namespace, callback,
+                  **kwargs)
 
     def enter_room(self, sid, room, namespace=None):
         """Enter a room.
@@ -328,9 +350,6 @@ class Server(object):
         This function returns the HTTP response body to deliver to the client
         as a byte sequence.
         """
-        if not self.manager_initialized:
-            self.manager_initialized = True
-            self.manager.initialize(self)
         return self.eio.handle_request(environ, start_response)
 
     def start_background_task(self, target, *args, **kwargs):
@@ -468,15 +487,18 @@ class Server(object):
 
     def _handle_eio_connect(self, sid, environ):
         """Handle the Engine.IO connection event."""
+        if not self.manager_initialized:
+            self.manager_initialized = True
+            self.manager.initialize()
         self.environ[sid] = environ
         return self._handle_connect(sid, '/')
 
     def _handle_eio_message(self, sid, data):
         """Dispatch Engine.IO messages."""
-        if len(self._binary_packet):
-            pkt = self._binary_packet[0]
+        if sid in self._binary_packet:
+            pkt = self._binary_packet[sid]
             if pkt.add_attachment(data):
-                self._binary_packet.pop(0)
+                del self._binary_packet[sid]
                 if pkt.packet_type == packet.BINARY_EVENT:
                     self._handle_event(sid, pkt.namespace, pkt.id, pkt.data)
                 else:
@@ -493,7 +515,7 @@ class Server(object):
                 self._handle_ack(sid, pkt.namespace, pkt.id, pkt.data)
             elif pkt.packet_type == packet.BINARY_EVENT or \
                     pkt.packet_type == packet.BINARY_ACK:
-                self._binary_packet.append(pkt)
+                self._binary_packet[sid] = pkt
             elif pkt.packet_type == packet.ERROR:
                 raise ValueError('Unexpected ERROR packet.')
             else:
@@ -502,3 +524,6 @@ class Server(object):
     def _handle_eio_disconnect(self, sid):
         """Handle Engine.IO disconnect event."""
         self._handle_disconnect(sid, '/')
+
+    def _engineio_server_class(self):
+        return engineio.Server

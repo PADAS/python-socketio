@@ -6,10 +6,8 @@
 socketio documentation
 ======================
 
-:ref:`genindex` | :ref:`modindex` | :ref:`search`
-
-This project implements a Socket.IO server that can run standalone or
-integrated with a Python WSGI application. The following are some of its
+This project implements a Python Socket.IO server that can run standalone or
+integrated with a web application. The following are some of its
 features:
 
 - Fully compatible with the 
@@ -21,9 +19,11 @@ features:
   Socket.IO specification.
 - Compatible with Python 2.7 and Python 3.3+.
 - Supports large number of clients even on modest hardware when used with an
-  asynchronous server based on `eventlet <http://eventlet.net/>`_ or
-  `gevent <http://gevent.org/>`_. For development and testing, any WSGI
-  complaint multi-threaded server can be used.
+  asynchronous server based on `asyncio <https://docs.python.org/3/library/asyncio.html>`_
+  (`sanic <http://sanic.readthedocs.io/>`_ and `aiohttp <http://aiohttp.readthedocs.io/>`_),
+  `eventlet <http://eventlet.net/>`_ or `gevent <http://gevent.org>`_. For
+  development and testing, any WSGI compliant multi-threaded server can also be
+  used.
 - Includes a WSGI middleware that integrates Socket.IO traffic with standard
   WSGI applications.
 - Broadcasting of messages to all connected clients, or to subsets of them
@@ -55,8 +55,45 @@ The Socket.IO server can be installed with pip::
 
     pip install python-socketio
 
-The following is a basic example of a Socket.IO server that uses Flask to
-deploy the client code to the browser::
+The following is a basic example of a Socket.IO server that uses the
+`aiohttp <http://aiohttp.readthedocs.io/>`_ framework for asyncio (Python 3.5+
+only):
+
+.. code:: python
+
+    from aiohttp import web
+    import socketio
+
+    sio = socketio.AsyncServer()
+    app = web.Application()
+    sio.attach(app)
+
+    async def index(request):
+        """Serve the client-side application."""
+        with open('index.html') as f:
+            return web.Response(text=f.read(), content_type='text/html')
+
+    @sio.on('connect', namespace='/chat')
+    def connect(sid, environ):
+        print("connect ", sid)
+
+    @sio.on('chat message', namespace='/chat')
+    async def message(sid, data):
+        print("message ", data)
+        await sio.emit('reply', room=sid)
+
+    @sio.on('disconnect', namespace='/chat')
+    def disconnect(sid):
+        print('disconnect ', sid)
+
+    app.router.add_static('/static', 'static')
+    app.router.add_get('/', index)
+
+    if __name__ == '__main__':
+        web.run_app(app)
+
+And below is a similar example, but using Flask and Eventlet. This example is
+compatible with Python 2.7 and 3.3+::
 
     import socketio
     import eventlet
@@ -107,6 +144,41 @@ them with event handlers. An event is defined simply by a name.
 When a connection with a client is broken, the ``disconnect`` event is called,
 allowing the application to perform cleanup.
 
+Server
+------
+
+Socket.IO servers are instances of class :class:`socketio.Server`, which can be
+combined with a WSGI compliant application using :class:`socketio.Middleware`::
+
+    # create a Socket.IO server
+    sio = socketio.Server()
+
+    # wrap WSGI application with socketio's middleware
+    app = socketio.Middleware(sio, app)
+
+
+For asyncio based servers, the :class:`socketio.AsyncServer` class provides a
+coroutine friendly server::
+
+    # create a Socket.IO server
+    sio = socketio.AsyncServer()
+
+    # attach server to application
+    sio.attach(app)
+
+Event handlers for servers are register using the :func:`socketio.Server.on`
+method::
+
+    @sio.on('my custom event')
+    def my_custom_event():
+        pass
+
+For asyncio servers, event handlers can be regular functions or coroutines::
+
+    @sio.on('my custom event')
+    async def my_custom_event():
+        await sio.emit('my reply')
+
 Rooms
 -----
 
@@ -131,7 +203,7 @@ that it will lose the ability to address individual clients.
     def enter_room(sid, data):
         sio.enter_room(sid, data['room'])
 
-    @sio.on('enter room')
+    @sio.on('leave room')
     def leave_room(sid, data):
         sio.leave_room(sid, data['room'])
 
@@ -204,14 +276,14 @@ as a pathname following the hostname and port. For example, connecting to
 *http://example.com:8000/chat* would open a connection to the namespace
 */chat*.
 
-Each namespace is handled independently from the others, with separate event
-handlers and rooms. It is important that applications that use multiple
-namespaces specify the correct namespace when setting up their event handlers
-and rooms, using the optional ``namespace`` argument available in all the
-methods in the :class:`socketio.Server` class.
+Each namespace is handled independently from the others, with separate session
+IDs (``sid``s), event handlers and rooms. It is important that applications
+that use multiple namespaces specify the correct namespace when setting up
+their event handlers and rooms, using the optional ``namespace`` argument
+available in all the methods in the :class:`socketio.Server` class.
 
-When the ``namespace`` argument is omitted, set to ``None`` or to ``'/'``, the
-default namespace, representing the physical connection, is used.
+When the ``namespace`` argument is omitted, set to ``None`` or to ``'/'``, a
+default namespace is used.
 
 Class-Based Namespaces
 ----------------------
@@ -232,6 +304,22 @@ that belong to a namespace can be created as methods of a subclass of
 
     sio.register_namespace(MyCustomNamespace('/test'))
 
+For asyncio based severs, namespaces must inherit from
+:class:`socketio.AsyncNamespace`, and can define event handlers as regular
+methods or coroutines::
+
+    class MyCustomNamespace(socketio.AsyncNamespace):
+        def on_connect(sid, environ):
+            pass
+
+        def on_disconnect(sid):
+            pass
+
+        async def on_my_event(sid, data):
+            await self.emit('my_response', data)
+
+    sio.register_namespace(MyCustomNamespace('/test'))
+
 When class-based namespaces are used, any events received by the server are
 dispatched to a method named as the event name with the ``on_`` prefix. For
 example, event ``my_event`` will be handled by a method named ``on_my_event``.
@@ -241,11 +329,17 @@ class-based namespaces must used characters that are legal in method names.
 
 As a convenience to methods defined in a class-based namespace, the namespace
 instance includes versions of several of the methods in the 
-:class:`socketio.Server` class that default to the proper namespace when the
-``namespace`` argument is not given.
+:class:`socketio.Server` and :class:`socketio.AsyncServer` classes that default
+to the proper namespace when the ``namespace`` argument is not given.
 
-Note: if an event has a handler in a class-based namespace, and also a
-decorator-based function handler, the standalone function handler is invoked.
+In the case that an event has a handler in a class-based namespace, and also a
+decorator-based function handler, only the standalone function handler is
+invoked.
+
+It is important to note that class-based namespaces are singletons. This means
+that a single instance of a namespace class is used for all clients, and
+consequently, a namespace instance cannot be used to store client specific
+information.
 
 Using a Message Queue
 ---------------------
@@ -270,11 +364,13 @@ type of installation, each server processes owns the connections to a subset
 of the clients. To make broadcasting work in this environment, the servers
 communicate with each other through the message queue.
 
-The message queue service needs to be installed and configured separately. One
-of the options offered by this package is to use
-`Kombu <http://kombu.readthedocs.org/en/latest/>`_ to access the message
-queue, which means that any message queue supported by this package can be
-used. Kombu can be installed with pip::
+Kombu
+~~~~~
+
+One of the messaging options offered by this package to access the message
+queue is `Kombu <http://kombu.readthedocs.org/en/latest/>`_ , which means that
+any message queue supported by this package can be used. Kombu can be installed
+with pip::
 
     pip install kombu
 
@@ -285,7 +381,8 @@ package for Redis installed as well::
 
     pip install redis
 
-To configure a Socket.IO server to connect to a message queue, the
+The appropriate message queue service, such as RabbitMQ or Redis, must also be
+installed. To configure a Socket.IO server to connect to a Kombu queue, the
 ``client_manager`` argument must be passed in the server creation. The
 following example instructs the server to connect to a Redis service running
 on the same host and on the default port::
@@ -299,27 +396,56 @@ credentials, the configuration is as follows::
     mgr = socketio.KombuManager('amqp://')
     sio = socketio.Server(client_manager=mgr)
 
-The URL passed to the ``KombuManager`` constructor is passed directly to
+The URL passed to the :class:`KombuManager` constructor is passed directly to
 Kombu's `Connection object
 <http://kombu.readthedocs.org/en/latest/userguide/connections.html>`_, so
 the Kombu documentation should be consulted for information on how to
 connect to the message queue appropriately.
 
-If the use of Kombu is not desired, native Redis support is also offered
-through the ``RedisManager`` class. This class takes the same arguments as
-``KombuManager``, but connects directly to a Redis store using the queue's
-pub/sub functionality::
+Note that Kombu currently does not support asyncio, so it cannot be used with
+the :class:`socketio.AsyncServer` class.
 
+Redis
+~~~~~
+
+To use a Redis message queue, the Python package for Redis must also be
+installed::
+
+    # WSGI server
+    pip install redis
+
+    # asyncio server
+    pip install aioredis
+
+Native Redis support is accessed through the :class:`socketio.RedisManager` and 
+:class:`socketio.AsyncRedisManager` classes. These classes connect directly to
+the Redis store and use the queue's pub/sub functionality::
+
+    # WSGI server
     mgr = socketio.RedisManager('redis://')
     sio = socketio.Server(client_manager=mgr)
 
-If multiple Sokcet.IO servers are connected to a message queue, they
+    # asyncio server
+    mgr = socketio.AsyncRedisManager('redis://')
+    sio = socketio.AsyncServer(client_manager=mgr)
+
+Horizontal scaling
+~~~~~~~~~~~~~~~~~~
+
+If multiple Socket.IO servers are connected to the same message queue, they
 automatically communicate with each other and manage a combined client list,
-without any need for additional configuration. To have a process other than
-a server connect to the queue to emit a message, the same ``KombuManager``
-and ``RedisManager`` classes can be used as standalone object. In this case,
-the ``write_only`` argument should be set to ``True`` to disable the creation
-of a listening thread. For example::
+without any need for additional configuration. When a load balancer such as
+nginx is used, this provides virtually unlimited scaling capabilities for the
+server.
+
+Emitting from external processes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To have a process other than a server connect to the queue to emit a message,
+the same client manager classes can be used as standalone objects. In this
+case, the ``write_only`` argument should be set to ``True`` to disable the
+creation of a listening thread, which only makes sense in a server. For
+example::
 
     # connect to the redis queue through Kombu
     external_sio = socketio.KombuManager('redis://', write_only=True)
@@ -327,16 +453,64 @@ of a listening thread. For example::
     # emit an event
     external_sio.emit('my event', data={'foo': 'bar'}, room='my room')
 
-Note: when using a third party package to manage a message queue such as Redis
-or RabbitMQ in conjunction with eventlet or gevent, it is necessary to monkey
-patch the Python standard library, so that these packages access coroutine
-friendly library functions and classes.
-
 Deployment
 ----------
 
 The following sections describe a variety of deployment strategies for
 Socket.IO servers.
+
+Sanic
+~~~~~
+
+`Sanic <http://sanic.readthedocs.io/>`_ is a very efficient asynchronous web
+server for Python 3.5 and newer.
+
+Instances of class ``socketio.AsyncServer`` will automatically use Sanic for
+asynchronous operations if the framework is installed. To request its use
+explicitly, the ``async_mode`` option can be given in the constructor::
+
+    sio = socketio.AsyncServer(async_mode='sanic')
+
+A server configured for aiohttp must be attached to an existing application::
+
+    app = web.Application()
+    sio.attach(app)
+
+The Sanic application can define regular routes that will coexist with the
+Socket.IO server. A typical pattern is to add routes that serve a client
+application and any associated static files.
+
+The Sanic application is then executed in the usual manner::
+
+    if __name__ == '__main__':
+        app.run()
+
+aiohttp
+~~~~~~~
+
+`Aiohttp <http://aiohttp.readthedocs.io/>`_ is a framework with support for HTTP
+and WebSocket, based on asyncio. Support for this framework is limited to Python
+3.5 and newer.
+
+Instances of class ``socketio.AsyncServer`` will automatically use aiohttp
+for asynchronous operations if the library is installed. To request its use
+explicitly, the ``async_mode`` option can be given in the constructor::
+
+    sio = socketio.AsyncServer(async_mode='aiohttp')
+
+A server configured for aiohttp must be attached to an existing application::
+
+    app = web.Application()
+    sio.attach(app)
+
+The aiohttp application can define regular routes that will coexist with the
+Socket.IO server. A typical pattern is to add routes that serve a client
+application and any associated static files.
+
+The aiohttp application is then executed in the usual manner::
+
+    if __name__ == '__main__':
+        web.run_app(app)
 
 Eventlet
 ~~~~~~~~
@@ -379,7 +553,7 @@ database drivers are likely to require it.
 Gevent
 ~~~~~~
 
-`Gevent <http://gevent.org>`_ is another asynchronous framework based on
+`Gevent <http://gevent.org/>`_ is another asynchronous framework based on
 coroutines, very similar to eventlet. An Socket.IO server deployed with
 gevent has access to the long-polling transport. If project
 `gevent-websocket <https://bitbucket.org/Jeffrey/gevent-websocket/>`_ is
@@ -497,8 +671,8 @@ difficult. To deploy a cluster of Socket.IO processes (hosted on one or
 multiple servers), the following conditions must be met:
 
 - Each Socket.IO process must be able to handle multiple requests, either by
-  using eventlet, gevent, or standard threads. Worker processes that only
-  handle one request at a time are not supported.
+  using asyncio, eventlet, gevent, or standard threads. Worker processes that
+  only handle one request at a time are not supported.
 - The load balancer must be configured to always forward requests from a
   client to the same worker process. Load balancers call this *sticky
   sessions*, or *session affinity*.
@@ -510,17 +684,39 @@ API Reference
 -------------
 
 .. module:: socketio
+
 .. autoclass:: Middleware
    :members:
+
 .. autoclass:: Server
    :members:
+
+.. autoclass:: AsyncServer
+   :members:
+   :inherited-members:
+
 .. autoclass:: Namespace
    :members:
+
+.. autoclass:: AsyncNamespace
+   :members:
+   :inherited-members:
+
 .. autoclass:: BaseManager
    :members:
+
 .. autoclass:: PubSubManager
    :members:
+
 .. autoclass:: KombuManager
    :members:
+
 .. autoclass:: RedisManager
+   :members:
+
+.. autoclass:: AsyncManager
+   :members:
+   :inherited-members:
+
+.. autoclass:: AsyncRedisManager
    :members:

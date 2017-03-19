@@ -1,3 +1,4 @@
+import sys
 import unittest
 
 import six
@@ -6,13 +7,39 @@ if six.PY3:
 else:
     import mock
 
-from socketio import base_manager
+if sys.version_info >= (3, 5):
+    import asyncio
+    from asyncio import coroutine
+    from socketio import asyncio_manager
+else:
+    # mock coroutine so that Python 2 doesn't complain
+    def coroutine(f):
+        return f
 
 
-class TestBaseManager(unittest.TestCase):
+def AsyncMock(*args, **kwargs):
+    """Return a mock asynchronous function."""
+    m = mock.MagicMock(*args, **kwargs)
+
+    @coroutine
+    def mock_coro(*args, **kwargs):
+        return m(*args, **kwargs)
+
+    mock_coro.mock = m
+    return mock_coro
+
+
+def _run(coro):
+    """Run the given coroutine."""
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+@unittest.skipIf(sys.version_info < (3, 5), 'only for Python 3.5+')
+class TestAsyncManager(unittest.TestCase):
     def setUp(self):
         mock_server = mock.MagicMock()
-        self.bm = base_manager.BaseManager()
+        mock_server._emit_internal = AsyncMock()
+        self.bm = asyncio_manager.AsyncManager()
         self.bm.set_server(mock_server)
         self.bm.initialize()
 
@@ -99,17 +126,29 @@ class TestBaseManager(unittest.TestCase):
         self.bm.disconnect('123', '/')
         self.assertNotIn('123', self.bm.callbacks)
 
-    def test_trigger_callback(self):
+    def test_trigger_sync_callback(self):
         self.bm.connect('123', '/')
         self.bm.connect('123', '/foo')
         cb = mock.MagicMock()
         id1 = self.bm._generate_ack_id('123', '/', cb)
         id2 = self.bm._generate_ack_id('123', '/foo', cb)
-        self.bm.trigger_callback('123', '/', id1, ['foo'])
-        self.bm.trigger_callback('123', '/foo', id2, ['bar', 'baz'])
+        _run(self.bm.trigger_callback('123', '/', id1, ['foo']))
+        _run(self.bm.trigger_callback('123', '/foo', id2, ['bar', 'baz']))
         self.assertEqual(cb.call_count, 2)
         cb.assert_any_call('foo')
         cb.assert_any_call('bar', 'baz')
+
+    def test_trigger_async_callback(self):
+        self.bm.connect('123', '/')
+        self.bm.connect('123', '/foo')
+        cb = AsyncMock()
+        id1 = self.bm._generate_ack_id('123', '/', cb)
+        id2 = self.bm._generate_ack_id('123', '/foo', cb)
+        _run(self.bm.trigger_callback('123', '/', id1, ['foo']))
+        _run(self.bm.trigger_callback('123', '/foo', id2, ['bar', 'baz']))
+        self.assertEqual(cb.mock.call_count, 2)
+        cb.mock.assert_any_call('foo')
+        cb.mock.assert_any_call('bar', 'baz')
 
     def test_invalid_callback(self):
         self.bm.connect('123', '/')
@@ -117,10 +156,10 @@ class TestBaseManager(unittest.TestCase):
         id = self.bm._generate_ack_id('123', '/', cb)
 
         # these should not raise an exception
-        self.bm.trigger_callback('124', '/', id, ['foo'])
-        self.bm.trigger_callback('123', '/foo', id, ['foo'])
-        self.bm.trigger_callback('123', '/', id + 1, ['foo'])
-        self.assertEqual(cb.call_count, 0)
+        _run(self.bm.trigger_callback('124', '/', id, ['foo']))
+        _run(self.bm.trigger_callback('123', '/foo', id, ['foo']))
+        _run(self.bm.trigger_callback('123', '/', id + 1, ['foo']))
+        self.assertEqual(cb.mock.call_count, 0)
 
     def test_get_namespaces(self):
         self.assertEqual(list(self.bm.get_namespaces()), [])
@@ -156,7 +195,7 @@ class TestBaseManager(unittest.TestCase):
         self.bm.connect('789', '/foo')
         self.bm.enter_room('123', '/foo', 'bar')
         self.bm.enter_room('123', '/foo', 'bar')
-        self.bm.close_room('bar', '/foo')
+        _run(self.bm.close_room('bar', '/foo'))
         self.assertNotIn('bar', self.bm.rooms['/foo'])
 
     def test_close_invalid_room(self):
@@ -173,12 +212,10 @@ class TestBaseManager(unittest.TestCase):
     def test_emit_to_sid(self):
         self.bm.connect('123', '/foo')
         self.bm.connect('456', '/foo')
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
-                     room='123')
-        self.bm.server._emit_internal.assert_called_once_with('123',
-                                                              'my event',
-                                                              {'foo': 'bar'},
-                                                              '/foo', None)
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
+                          room='123'))
+        self.bm.server._emit_internal.mock.assert_called_once_with(
+            '123', 'my event', {'foo': 'bar'}, '/foo', None)
 
     def test_emit_to_room(self):
         self.bm.connect('123', '/foo')
@@ -186,15 +223,13 @@ class TestBaseManager(unittest.TestCase):
         self.bm.connect('456', '/foo')
         self.bm.enter_room('456', '/foo', 'bar')
         self.bm.connect('789', '/foo')
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
-                     room='bar')
-        self.assertEqual(self.bm.server._emit_internal.call_count, 2)
-        self.bm.server._emit_internal.assert_any_call('123', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
-        self.bm.server._emit_internal.assert_any_call('456', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
+                          room='bar'))
+        self.assertEqual(self.bm.server._emit_internal.mock.call_count, 2)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '123', 'my event', {'foo': 'bar'}, '/foo', None)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '456', 'my event', {'foo': 'bar'}, '/foo', None)
 
     def test_emit_to_all(self):
         self.bm.connect('123', '/foo')
@@ -203,17 +238,14 @@ class TestBaseManager(unittest.TestCase):
         self.bm.enter_room('456', '/foo', 'bar')
         self.bm.connect('789', '/foo')
         self.bm.connect('abc', '/bar')
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo')
-        self.assertEqual(self.bm.server._emit_internal.call_count, 3)
-        self.bm.server._emit_internal.assert_any_call('123', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
-        self.bm.server._emit_internal.assert_any_call('456', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
-        self.bm.server._emit_internal.assert_any_call('789', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo'))
+        self.assertEqual(self.bm.server._emit_internal.mock.call_count, 3)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '123', 'my event', {'foo': 'bar'}, '/foo', None)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '456', 'my event', {'foo': 'bar'}, '/foo', None)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '789', 'my event', {'foo': 'bar'}, '/foo', None)
 
     def test_emit_to_all_skip_one(self):
         self.bm.connect('123', '/foo')
@@ -222,30 +254,27 @@ class TestBaseManager(unittest.TestCase):
         self.bm.enter_room('456', '/foo', 'bar')
         self.bm.connect('789', '/foo')
         self.bm.connect('abc', '/bar')
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
-                     skip_sid='456')
-        self.assertEqual(self.bm.server._emit_internal.call_count, 2)
-        self.bm.server._emit_internal.assert_any_call('123', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
-        self.bm.server._emit_internal.assert_any_call('789', 'my event',
-                                                      {'foo': 'bar'}, '/foo',
-                                                      None)
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
+                          skip_sid='456'))
+        self.assertEqual(self.bm.server._emit_internal.mock.call_count, 2)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '123', 'my event', {'foo': 'bar'}, '/foo', None)
+        self.bm.server._emit_internal.mock.assert_any_call(
+            '789', 'my event', {'foo': 'bar'}, '/foo', None)
 
     def test_emit_with_callback(self):
         self.bm.connect('123', '/foo')
         self.bm._generate_ack_id = mock.MagicMock()
         self.bm._generate_ack_id.return_value = 11
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
-                     callback='cb')
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo',
+                          callback='cb'))
         self.bm._generate_ack_id.assert_called_once_with('123', '/foo', 'cb')
-        self.bm.server._emit_internal.assert_called_once_with('123',
-                                                              'my event',
-                                                              {'foo': 'bar'},
-                                                              '/foo', 11)
+        self.bm.server._emit_internal.mock.assert_called_once_with(
+            '123', 'my event', {'foo': 'bar'}, '/foo', 11)
 
     def test_emit_to_invalid_room(self):
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/', room='123')
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/',
+                          room='123'))
 
     def test_emit_to_invalid_namespace(self):
-        self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo')
+        _run(self.bm.emit('my event', {'foo': 'bar'}, namespace='/foo'))
