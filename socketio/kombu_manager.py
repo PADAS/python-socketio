@@ -64,7 +64,7 @@ class KombuManager(PubSubManager):  # pragma: no cover
                 'with ' + self.server.async_mode)
 
     def _connection(self):
-        return kombu.Connection(self.url)
+        return kombu.Connection(self.url, transport_options=self.transport_options)
 
     def _exchange(self):
         return kombu.Exchange(self.channel, type='fanout', durable=False)
