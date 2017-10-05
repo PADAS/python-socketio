@@ -13,19 +13,14 @@ def _parse_redis_url(url):
     p = urlparse(url)
     if p.scheme != 'redis':
         raise ValueError('Invalid redis url')
-    if ':' in p.netloc:
-        host, port = p.netloc.split(':')
-        port = int(port)
-    else:
-        host = p.netloc or 'localhost'
-        port = 6379
+    host = p.hostname or 'localhost'
+    port = p.port or 6379
+    password = p.password
     if p.path:
         db = int(p.path[1:])
     else:
         db = 0
-    if not host:
-        raise ValueError('Invalid redis hostname')
-    return host, port, db
+    return host, port, password, db
 
 
 class AsyncRedisManager(AsyncPubSubManager):  # pragma: no cover
@@ -58,7 +53,7 @@ class AsyncRedisManager(AsyncPubSubManager):  # pragma: no cover
             raise RuntimeError('Redis package is not installed '
                                '(Run "pip install aioredis" in your '
                                'virtualenv).')
-        self.host, self.port, self.db = _parse_redis_url(url)
+        self.host, self.port, self.password, self.db = _parse_redis_url(url)
         self.pub = None
         self.sub = None
         super().__init__(channel=channel, write_only=write_only)
@@ -66,13 +61,15 @@ class AsyncRedisManager(AsyncPubSubManager):  # pragma: no cover
     async def _publish(self, data):
         if self.pub is None:
             self.pub = await aioredis.create_redis((self.host, self.port),
-                                                   db=self.db)
+                                                   db=self.db,
+                                                   password=self.password)
         return await self.pub.publish(self.channel, pickle.dumps(data))
 
     async def _listen(self):
         if self.sub is None:
             self.sub = await aioredis.create_redis((self.host, self.port),
-                                                   db=self.db)
+                                                   db=self.db,
+                                                   password=self.password)
             self.ch = (await self.sub.subscribe(self.channel))[0]
         while True:
             return await self.ch.get()
