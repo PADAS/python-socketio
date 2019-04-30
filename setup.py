@@ -5,6 +5,7 @@ python-socketio
 Socket.IO server.
 """
 import re
+import sys
 from setuptools import setup
 
 with open('socketio/__init__.py', 'r') as f:
@@ -29,12 +30,22 @@ setup(
     platforms='any',
     install_requires=[
         'six>=1.9.0',
-        'python-engineio>=1.2.1'
+        'python-engineio>=3.2.0'
     ],
+    extras_require={
+        'client': [
+            'requests>=2.21.0',
+            'websocket-client>=0.54.0',
+        ],
+        'asyncio_client': [
+            'aiohttp>=3.4',
+            'websockets>=7.0',
+        ]
+    },
     tests_require=[
         'mock',
     ],
-    test_suite='tests',
+    test_suite='tests' if sys.version_info >= (3, 0) else 'tests.common',
     classifiers=[
         'Environment :: Web Environment',
         'Intended Audience :: Developers',
