@@ -43,6 +43,7 @@ class TestClient(unittest.TestCase):
         self.assertEqual(c.connection_transports, None)
         self.assertEqual(c.connection_namespaces, None)
         self.assertEqual(c.socketio_path, None)
+        self.assertEqual(c.sid, None)
 
         self.assertEqual(c.namespaces, [])
         self.assertEqual(c.handlers, {})
@@ -94,6 +95,30 @@ class TestClient(unittest.TestCase):
         self.assertEqual(c.handlers['/']['connect'], foo)
         self.assertEqual(c.handlers['/']['disconnect'], bar)
         self.assertEqual(c.handlers['/foo']['disconnect'], bar)
+
+    def test_event(self):
+        c = client.Client()
+
+        @c.event
+        def connect():
+            pass
+
+        @c.event
+        def foo():
+            pass
+
+        @c.event
+        def bar():
+            pass
+
+        @c.event(namespace='/foo')
+        def disconnect():
+            pass
+
+        self.assertEqual(c.handlers['/']['connect'], connect)
+        self.assertEqual(c.handlers['/']['foo'], foo)
+        self.assertEqual(c.handlers['/']['bar'], bar)
+        self.assertEqual(c.handlers['/foo']['disconnect'], disconnect)
 
     def test_namespace_handler(self):
         class MyNamespace(namespace.ClientNamespace):
@@ -646,12 +671,12 @@ class TestClient(unittest.TestCase):
     def test_handle_reconnect(self, random):
         c = client.Client()
         c._reconnect_task = 'foo'
-        c.sleep = mock.MagicMock()
+        c._reconnect_abort.wait = mock.MagicMock(return_value=False)
         c.connect = mock.MagicMock(
             side_effect=[ValueError, exceptions.ConnectionError, None])
         c._handle_reconnect()
-        self.assertEqual(c.sleep.call_count, 3)
-        self.assertEqual(c.sleep.call_args_list, [
+        self.assertEqual(c._reconnect_abort.wait.call_count, 3)
+        self.assertEqual(c._reconnect_abort.wait.call_args_list, [
             mock.call(1.5),
             mock.call(1.5),
             mock.call(4.0)
@@ -662,12 +687,12 @@ class TestClient(unittest.TestCase):
     def test_handle_reconnect_max_delay(self, random):
         c = client.Client(reconnection_delay_max=3)
         c._reconnect_task = 'foo'
-        c.sleep = mock.MagicMock()
+        c._reconnect_abort.wait = mock.MagicMock(return_value=False)
         c.connect = mock.MagicMock(
             side_effect=[ValueError, exceptions.ConnectionError, None])
         c._handle_reconnect()
-        self.assertEqual(c.sleep.call_count, 3)
-        self.assertEqual(c.sleep.call_args_list, [
+        self.assertEqual(c._reconnect_abort.wait.call_count, 3)
+        self.assertEqual(c._reconnect_abort.wait.call_args_list, [
             mock.call(1.5),
             mock.call(1.5),
             mock.call(3.0)
@@ -678,16 +703,37 @@ class TestClient(unittest.TestCase):
     def test_handle_reconnect_max_attempts(self, random):
         c = client.Client(reconnection_attempts=2)
         c._reconnect_task = 'foo'
-        c.sleep = mock.MagicMock()
+        c._reconnect_abort.wait = mock.MagicMock(return_value=False)
         c.connect = mock.MagicMock(
             side_effect=[ValueError, exceptions.ConnectionError, None])
         c._handle_reconnect()
-        self.assertEqual(c.sleep.call_count, 2)
-        self.assertEqual(c.sleep.call_args_list, [
+        self.assertEqual(c._reconnect_abort.wait.call_count, 2)
+        self.assertEqual(c._reconnect_abort.wait.call_args_list, [
             mock.call(1.5),
             mock.call(1.5)
         ])
         self.assertEqual(c._reconnect_task, 'foo')
+
+    @mock.patch('socketio.client.random.random', side_effect=[1, 0, 0.5])
+    def test_handle_reconnect_aborted(self, random):
+        c = client.Client()
+        c._reconnect_task = 'foo'
+        c._reconnect_abort.wait = mock.MagicMock(side_effect=[False, True])
+        c.connect = mock.MagicMock(side_effect=exceptions.ConnectionError)
+        c._handle_reconnect()
+        self.assertEqual(c._reconnect_abort.wait.call_count, 2)
+        self.assertEqual(c._reconnect_abort.wait.call_args_list, [
+            mock.call(1.5),
+            mock.call(1.5)
+        ])
+        self.assertEqual(c._reconnect_task, 'foo')
+
+    def test_handle_eio_connect(self):
+        c = client.Client()
+        c.eio.sid = 'foo'
+        self.assertIsNone(c.sid)
+        c._handle_eio_connect()
+        self.assertEqual(c.sid, 'foo')
 
     def test_handle_eio_message(self):
         c = client.Client()
@@ -730,20 +776,24 @@ class TestClient(unittest.TestCase):
         c = client.Client()
         c._trigger_event = mock.MagicMock()
         c.start_background_task = mock.MagicMock()
+        c.sid = 'foo'
         c.eio.state = 'connected'
         c._handle_eio_disconnect()
         c._trigger_event.assert_called_once_with('disconnect', namespace='/')
+        self.assertIsNone(c.sid)
 
     def test_eio_disconnect_namespaces(self):
         c = client.Client()
         c.namespaces = ['/foo', '/bar']
         c._trigger_event = mock.MagicMock()
         c.start_background_task = mock.MagicMock()
+        c.sid = 'foo'
         c.eio.state = 'connected'
         c._handle_eio_disconnect()
         c._trigger_event.assert_any_call('disconnect', namespace='/foo')
         c._trigger_event.assert_any_call('disconnect', namespace='/bar')
         c._trigger_event.assert_any_call('disconnect', namespace='/')
+        self.assertIsNone(c.sid)
 
     def test_eio_disconnect_reconnect(self):
         c = client.Client(reconnection=True)

@@ -48,28 +48,69 @@ class TestServer(unittest.TestCase):
         self.assertEqual(s.handlers['/']['disconnect'], bar)
         self.assertEqual(s.handlers['/foo']['disconnect'], bar)
 
+    def test_event(self, eio):
+        s = server.Server()
+
+        @s.event
+        def connect():
+            pass
+
+        @s.event
+        def foo():
+            pass
+
+        @s.event()
+        def bar():
+            pass
+
+        @s.event(namespace='/foo')
+        def disconnect():
+            pass
+
+        self.assertEqual(s.handlers['/']['connect'], connect)
+        self.assertEqual(s.handlers['/']['foo'], foo)
+        self.assertEqual(s.handlers['/']['bar'], bar)
+        self.assertEqual(s.handlers['/foo']['disconnect'], disconnect)
+
     def test_emit(self, eio):
         mgr = mock.MagicMock()
         s = server.Server(client_manager=mgr)
-        s.emit('my event', {'foo': 'bar'}, 'room', '123', namespace='/foo',
-               callback='cb')
+        s.emit('my event', {'foo': 'bar'}, to='room', skip_sid='123',
+               namespace='/foo', callback='cb')
         s.manager.emit.assert_called_once_with(
+            'my event', {'foo': 'bar'}, '/foo', room='room', skip_sid='123',
+            callback='cb')
+        s.emit('my event', {'foo': 'bar'}, room='room', skip_sid='123',
+               namespace='/foo', callback='cb')
+        s.manager.emit.assert_called_with(
             'my event', {'foo': 'bar'}, '/foo', room='room', skip_sid='123',
             callback='cb')
 
     def test_emit_default_namespace(self, eio):
         mgr = mock.MagicMock()
         s = server.Server(client_manager=mgr)
-        s.emit('my event', {'foo': 'bar'}, 'room', '123', callback='cb')
+        s.emit('my event', {'foo': 'bar'}, to='room', skip_sid='123',
+               callback='cb')
         s.manager.emit.assert_called_once_with(
+            'my event', {'foo': 'bar'}, '/', room='room', skip_sid='123',
+            callback='cb')
+        s.emit('my event', {'foo': 'bar'}, room='room', skip_sid='123',
+               callback='cb')
+        s.manager.emit.assert_called_with(
             'my event', {'foo': 'bar'}, '/', room='room', skip_sid='123',
             callback='cb')
 
     def test_send(self, eio):
         mgr = mock.MagicMock()
         s = server.Server(client_manager=mgr)
-        s.send('foo', 'room', '123', namespace='/foo', callback='cb')
+        s.send('foo', to='room', skip_sid='123', namespace='/foo',
+               callback='cb')
         s.manager.emit.assert_called_once_with(
+            'message', 'foo', '/foo', room='room', skip_sid='123',
+            callback='cb')
+        s.send('foo', room='room', skip_sid='123', namespace='/foo',
+               callback='cb')
+        s.manager.emit.assert_called_with(
             'message', 'foo', '/foo', room='room', skip_sid='123',
             callback='cb')
 
@@ -424,7 +465,8 @@ class TestServer(unittest.TestCase):
 
     def test_handle_event_with_ack_binary(self, eio):
         mgr = mock.MagicMock()
-        s = server.Server(client_manager=mgr, binary=True, async_handlers=False)
+        s = server.Server(client_manager=mgr, binary=True,
+                          async_handlers=False)
         handler = mock.MagicMock(return_value=b'foo')
         s.on('my message', handler)
         s._handle_eio_message('123', '21000["my message","foo"]')

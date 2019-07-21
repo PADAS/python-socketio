@@ -5,14 +5,13 @@ import socketio
 
 sio = socketio.AsyncServer(async_mode='asgi')
 app = socketio.ASGIApp(sio, static_files={
-    '/': {'content_type': 'text/html', 'filename': 'latency.html'},
-    '/static/style.css': {'content_type': 'text/css',
-                          'filename': 'static/style.css'},
+    '/': 'latency.html',
+    '/static': 'static',
 })
 
 
-@sio.on('ping_from_client')
-async def ping(sid):
+@sio.event
+async def ping_from_client(sid):
     await sio.emit('pong_from_server', room=sid)
 
 

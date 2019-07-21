@@ -186,6 +186,41 @@ class Server(object):
             return set_handler
         set_handler(handler)
 
+    def event(self, *args, **kwargs):
+        """Decorator to register an event handler.
+
+        This is a simplified version of the ``on()`` method that takes the
+        event name from the decorated function.
+
+        Example usage::
+
+            @sio.event
+            def my_event(data):
+                print('Received data: ', data)
+
+        The above example is equivalent to::
+
+            @sio.on('my_event')
+            def my_event(data):
+                print('Received data: ', data)
+
+        A custom namespace can be given as an argument to the decorator::
+
+            @sio.event(namespace='/test')
+            def my_event(data):
+                print('Received data: ', data)
+        """
+        if len(args) == 1 and len(kwargs) == 0 and callable(args[0]):
+            # the decorator was invoked without arguments
+            # args[0] is the decorated function
+            return self.on(args[0].__name__)(args[0])
+        else:
+            # the decorator was invoked with arguments
+            def set_handler(handler):
+                return self.on(handler.__name__, *args, **kwargs)(handler)
+
+            return set_handler
+
     def register_namespace(self, namespace_handler):
         """Register a namespace handler object.
 
@@ -201,8 +236,8 @@ class Server(object):
         self.namespace_handlers[namespace_handler.namespace] = \
             namespace_handler
 
-    def emit(self, event, data=None, room=None, skip_sid=None, namespace=None,
-             callback=None, **kwargs):
+    def emit(self, event, data=None, to=None, room=None, skip_sid=None,
+             namespace=None, callback=None, **kwargs):
         """Emit a custom event to one or more connected clients.
 
         :param event: The event name. It can be any string. The event names
@@ -211,14 +246,16 @@ class Server(object):
         :param data: The data to send to the client or clients. Data can be of
                      type ``str``, ``bytes``, ``list`` or ``dict``. If a
                      ``list`` or ``dict``, the data will be serialized as JSON.
-        :param room: The recipient of the message. This can be set to the
-                     session ID of a client to address that client's room, or
-                     to any custom room created by the application, If this
-                     argument is omitted the event is broadcasted to all
-                     connected clients.
+        :param to: The recipient of the message. This can be set to the
+                   session ID of a client to address only that client, or to
+                   to any custom room created by the application to address all
+                   the clients in that room, If this argument is omitted the
+                   event is broadcasted to all connected clients.
+        :param room: Alias for the ``to`` parameter.
         :param skip_sid: The session ID of a client to skip when broadcasting
                          to a room or to all clients. This can be used to
-                         prevent a message from being sent to the sender.
+                         prevent a message from being sent to the sender. To
+                         skip multiple sids, pass a list.
         :param namespace: The Socket.IO namespace for the event. If this
                           argument is omitted the event is emitted to the
                           default namespace.
@@ -236,12 +273,13 @@ class Server(object):
                              value of ``False``.
         """
         namespace = namespace or '/'
+        room = to or room
         self.logger.info('emitting event "%s" to %s [%s]', event,
                          room or 'all', namespace)
         self.manager.emit(event, data, namespace, room=room,
                           skip_sid=skip_sid, callback=callback, **kwargs)
 
-    def send(self, data, room=None, skip_sid=None, namespace=None,
+    def send(self, data, to=None, room=None, skip_sid=None, namespace=None,
              callback=None, **kwargs):
         """Send a message to one or more connected clients.
 
@@ -251,14 +289,16 @@ class Server(object):
         :param data: The data to send to the client or clients. Data can be of
                      type ``str``, ``bytes``, ``list`` or ``dict``. If a
                      ``list`` or ``dict``, the data will be serialized as JSON.
-        :param room: The recipient of the message. This can be set to the
-                     session ID of a client to address that client's room, or
-                     to any custom room created by the application, If this
-                     argument is omitted the event is broadcasted to all
-                     connected clients.
+        :param to: The recipient of the message. This can be set to the
+                   session ID of a client to address only that client, or to
+                   to any custom room created by the application to address all
+                   the clients in that room, If this argument is omitted the
+                   event is broadcasted to all connected clients.
+        :param room: Alias for the ``to`` parameter.
         :param skip_sid: The session ID of a client to skip when broadcasting
                          to a room or to all clients. This can be used to
-                         prevent a message from being sent to the sender.
+                         prevent a message from being sent to the sender. To
+                         skip multiple sids, pass a list.
         :param namespace: The Socket.IO namespace for the event. If this
                           argument is omitted the event is emitted to the
                           default namespace.
@@ -275,11 +315,11 @@ class Server(object):
                              to always leave this parameter with its default
                              value of ``False``.
         """
-        self.emit('message', data=data, room=room, skip_sid=skip_sid,
+        self.emit('message', data=data, to=to, room=room, skip_sid=skip_sid,
                   namespace=namespace, callback=callback, **kwargs)
 
-    def call(self, event, data=None, sid=None, namespace=None, timeout=60,
-             **kwargs):
+    def call(self, event, data=None, to=None, sid=None, namespace=None,
+             timeout=60, **kwargs):
         """Emit a custom event to a client and wait for the response.
 
         :param event: The event name. It can be any string. The event names
@@ -288,7 +328,8 @@ class Server(object):
         :param data: The data to send to the client or clients. Data can be of
                      type ``str``, ``bytes``, ``list`` or ``dict``. If a
                      ``list`` or ``dict``, the data will be serialized as JSON.
-        :param sid: The session ID of the recipient client.
+        :param to: The session ID of the recipient client.
+        :param sid: Alias for the ``to`` parameter.
         :param namespace: The Socket.IO namespace for the event. If this
                           argument is omitted the event is emitted to the
                           default namespace.
@@ -313,13 +354,13 @@ class Server(object):
             callback_args.append(args)
             callback_event.set()
 
-        self.emit(event, data=data, room=sid, namespace=namespace,
+        self.emit(event, data=data, room=to or sid, namespace=namespace,
                   callback=event_callback, **kwargs)
         if not callback_event.wait(timeout=timeout):
             raise exceptions.TimeoutError()
         return callback_args[0] if len(callback_args[0]) > 1 \
             else callback_args[0][0] if len(callback_args[0]) == 1 \
-                else None
+            else None
 
     def enter_room(self, sid, room, namespace=None):
         """Enter a room.

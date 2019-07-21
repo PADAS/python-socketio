@@ -49,27 +49,103 @@ ASGI application::
     # wrap with ASGI application
     app = socketio.ASGIApp(sio)
 
-The WSGI and ASGI application wrappers support serving static files, which is
-a convenient way to deliver JavaScript based Socket.IO clients to the web
-browser::
-
-   app = socketio.ASGIApp(sio, static_files={
-      '/': {'content_type': 'text/html', 'filename': 'latency.html'},
-      '/static/style.css': {'content_type': 'text/css',
-                            'filename': 'static/style.css'},
-   })
-
-The dictionary provided with the ``static_files`` argument has static file
-endpoints as keys. For each of these endpoints, a dictionary with the file's
-content type and local filename is given.
-
-These wrappers can also act as middlewares, forwarding any traffic that is not
-intended to Socket.IO server to another application. This allows Socket.IO
-servers to integrate easily into existing WSGI or ASGI applications::
+These two wrappers can also act as middlewares, forwarding any traffic that is
+not intended to the Socket.IO server to another application. This allows
+Socket.IO servers to integrate easily into existing WSGI or ASGI applications::
 
    from wsgi import app  # a Flask, Django, etc. application
-
    app = socketio.WSGIApp(sio, app)
+
+Serving Static Files
+--------------------
+
+The Engine.IO server can be configured to serve static files to clients. This
+is particularly useful to deliver HTML, CSS and JavaScript files to clients
+when this package is used without a companion web framework.
+
+Static files are configured with a Python dictionary in which each key/value
+pair is a static file mapping rule. In its simplest form, this dictionary has
+one or more static file URLs as keys, and the corresponding files in the server
+as values::
+
+    static_files = {
+        '/': 'latency.html',
+        '/static/socket.io.js': 'static/socket.io.js',
+        '/static/style.css': 'static/style.css',
+    }
+
+With this example configuration, when the server receives a request for ``/``
+(the root URL) it will return the contents of the file ``latency.html`` in the
+current directory, and will assign a content type based on the file extension,
+in this case ``text/html``.
+
+Files with the ``.html``, ``.css``, ``.js``, ``.json``, ``.jpg``, ``.png``,
+``.gif`` and ``.txt`` file extensions are automatically recognized and
+assigned the correct content type. For files with other file extensions or
+with no file extension, the ``application/octet-stream`` content type is used
+as a default.
+
+If desired, an explicit content type for a static file can be given as follows::
+
+    static_files = {
+        '/': {'filename': 'latency.html', 'content_type': 'text/plain'},
+    }
+
+It is also possible to configure an entire directory in a single rule, so that all
+the files in it are served as static files::
+
+    static_files = {
+        '/static': './public',
+    }
+
+In this example any files with URLs starting with ``/static`` will be served
+directly from the ``public`` folder in the current directory, so for example,
+the URL ``/static/index.html`` will return local file ``./public/index.html``
+and the URL ``/static/css/styles.css`` will return local file
+``./public/css/styles.css``.
+
+If a URL that ends in a ``/`` is requested, then a default filename of
+``index.html`` is appended to it. In the previous example, a request for the
+``/static/`` URL would return local file ``./public/index.html``. The default
+filename to serve for slash-ending URLs can be set in the static files
+dictionary with an empty key::
+
+    static_files = {
+        '/static': './public',
+        '': 'image.gif',
+    }
+
+With this configuration, a request for ``/static/`` would return
+local file ``./public/image.gif``. A non-standard content type can also be
+specified if needed::
+
+    static_files = {
+        '/static': './public',
+        '': {'filename': 'image.gif', 'content_type': 'text/plain'},
+    }
+
+The static file configuration dictionary is given as the ``static_files``
+argument to the ``socketio.WSGIApp`` or ``socketio.ASGIApp`` classes::
+
+    # for standard WSGI applications
+    sio = socketio.Server()
+    app = socketio.WSGIApp(sio, static_files=static_files)
+
+    # for asyncio-based ASGI applications
+    sio = socketio.AsyncServer()
+    app = socketio.ASGIApp(sio, static_files=static_files)
+
+The routing precedence in these two classes is as follows:
+
+- First, the path is checked against the Socket.IO endpoint.
+- Next, the path is checked against the static file configuration, if present.
+- If the path did not match the Socket.IO endpoint or any static file, control
+  is passed to the secondary application if configured, else a 404 error is
+  returned.
+
+Note: static file serving is intended for development use only, and as such
+it lacks important features such as caching. Do not use in a production
+environment.
 
 Defining Event Handlers
 -----------------------
@@ -77,30 +153,39 @@ Defining Event Handlers
 The Socket.IO protocol is event based. When a client wants to communicate with
 the server it *emits* an event. Each event has a name, and a list of
 arguments. The server registers event handler functions with the
-:func:`socketio.Server.on` decorator::
+:func:`socketio.Server.event` or :func:`socketio.Server.on` decorators::
+
+    @sio.event
+    def my_event(sid, data):
+        pass
 
     @sio.on('my custom event')
-    def my_custom_event(sid, data):
+    def another_event(sid, data):
         pass
+
+In the first example the event name is obtained from the name of the handler
+function. The second example is slightly more verbose, but it allows the event
+name to be different than the function name or to include characters that are
+illegal in function names, such as spaces.
 
 For asyncio servers, event handlers can optionally be given as coroutines::
 
-    @sio.on('my custom event')
-    async def my_custom_event(sid, data):
+    @sio.event
+    async def my_event(sid, data):
         pass
 
 The ``sid`` argument is the Socket.IO session id, a unique identifier of each
 client connection. All the events sent by a given client will have the same
 ``sid`` value.
 
-The ``connect`` and ``disconnect`` are special; they are invoked automatically
-when a client connects or disconnects from the server::
+The ``connect`` and ``disconnect`` events are special; they are invoked
+automatically when a client connects or disconnects from the server::
 
-    @sio.on('connect')
+    @sio.event
     def connect(sid, environ):
         print('connect ', sid)
 
-    @sio.on('disconnect')
+    @sio.event
     def disconnect(sid):
         print('disconnect ', sid)
 
@@ -114,9 +199,9 @@ headers. After inspecting the request, the connect event handler can return
 Sometimes it is useful to pass data back to the client being rejected. In that
 case instead of returning ``False``
 :class:`socketio.exceptions.ConnectionRefusedError` can be raised, and all of
-its argument will be sent to the client with the rejection::
+its arguments will be sent to the client with the rejection message::
 
-    @sio.on('connect')
+    @sio.event
     def connect(sid, environ):
         raise ConnectionRefusedError('authentication failed')
 
@@ -152,8 +237,8 @@ has processed the event. While this is entirely managed by the client, the
 server can provide a list of values that are to be passed on to the callback
 function, simply by returning them from the handler function::
 
-    @sio.on('my event', namespace='/chat')
-    def my_event_handler(sid, data):
+    @sio.event
+    def my_event(sid, data):
         # handle the message
         return "OK", 123
 
@@ -181,6 +266,10 @@ IDs (``sid``\ s), event handlers and rooms. It is important that applications
 that use multiple namespaces specify the correct namespace when setting up
 their event handlers and rooms, using the optional ``namespace`` argument
 available in all the methods in the :class:`socketio.Server` class::
+
+    @sio.event(namespace='/chat')
+    def my_custom_event(sid, data):
+        pass
 
     @sio.on('my custom event', namespace='/chat')
     def my_custom_event(sid, data):
@@ -264,11 +353,11 @@ rooms as needed and can be moved between rooms as often as necessary.
 
 ::
 
-   @sio.on('chat')
+   @sio.event
    def begin_chat(sid):
       sio.enter_room(sid, 'chat_users')
 
-    @sio.on('exit_chat')
+    @sio.event
     def exit_chat(sid):
         sio.leave_room(sid, 'chat_users')
 
@@ -280,8 +369,8 @@ during the broadcast.
 
 ::
 
-    @sio.on('my message')
-    def message(sid, data):
+    @sio.event
+    def my_message(sid, data):
         sio.emit('my reply', data, room='chat_users', skip_sid=sid)
 
 User Sessions
@@ -295,58 +384,61 @@ of the connection, such as usernames or user ids.
 The ``save_session()`` and ``get_session()`` methods are used to store and
 retrieve information in the user session::
 
-    @sio.on('connect')
-    def on_connect(sid, environ):
+    @sio.event
+    def connect(sid, environ):
         username = authenticate_user(environ)
         sio.save_session(sid, {'username': username})
 
-    @sio.on('message')
-    def on_message(sid, data):
+    @sio.event
+    def message(sid, data):
         session = sio.get_session(sid)
         print('message from ', session['username'])
 
 For the ``asyncio`` server, these methods are coroutines::
 
-
-    @sio.on('connect')
-    async def on_connect(sid, environ):
+    @sio.event
+    async def connect(sid, environ):
         username = authenticate_user(environ)
         await sio.save_session(sid, {'username': username})
 
-    @sio.on('message')
-    async def on_message(sid, data):
+    @sio.event
+    async def message(sid, data):
         session = await sio.get_session(sid)
         print('message from ', session['username'])
 
 The session can also be manipulated with the `session()` context manager::
 
-    @sio.on('connect')
-    def on_connect(sid, environ):
+    @sio.event
+    def connect(sid, environ):
         username = authenticate_user(environ)
         with sio.session(sid) as session:
             session['username'] = username
 
-    @sio.on('message')
-    def on_message(sid, data):
+    @sio.event
+    def message(sid, data):
         with sio.session(sid) as session:
             print('message from ', session['username'])
 
 For the ``asyncio`` server, an asynchronous context manager is used::
 
-    @sio.on('connect')
-    def on_connect(sid, environ):
+    @sio.event
+    def connect(sid, environ):
         username = authenticate_user(environ)
         async with sio.session(sid) as session:
             session['username'] = username
 
-    @sio.on('message')
-    def on_message(sid, data):
+    @sio.event
+    def message(sid, data):
         async with sio.session(sid) as session:
             print('message from ', session['username'])
 
 The ``get_session()``, ``save_session()`` and ``session()`` methods take an
 optional ``namespace`` argument. If this argument isn't provided, the session
 is attached to the default namespace.
+
+Note: the contents of the user session are destroyed when the client
+disconnects. In particular, user session contents are not preserved when a
+client reconnects after an unexpected disconnection from the server.
 
 Using a Message Queue
 ---------------------
@@ -490,7 +582,7 @@ explicitly, the ``async_mode`` option can be given in the constructor::
     sio = socketio.AsyncServer(async_mode='tornado')
 
 A server configured for tornado must include a request handler for
-Engine.IO::
+Socket.IO::
 
     app = tornado.web.Application(
         [
@@ -522,7 +614,7 @@ explicitly, the ``async_mode`` option can be given in the constructor::
 
 A server configured for aiohttp must be attached to an existing application::
 
-    app = web.Application()
+    app = Sanic()
     sio.attach(app)
 
 The Sanic application can define regular routes that will coexist with the
@@ -533,6 +625,18 @@ The Sanic application is then executed in the usual manner::
 
     if __name__ == '__main__':
         app.run()
+
+It has been reported that the CORS support provided by the Sanic extension
+`sanic-cors <https://github.com/ashleysommer/sanic-cors>`_ is incomaptible with
+this package's own support for this protocol. To disable CORS support in this
+package and let Sanic take full control, initialize the server as follows::
+
+    sio = socketio.AsyncServer(async_mode='sanic', cors_allowed_origins=[])
+
+On the Sanic side you will need to enable the `CORS_SUPPORTS_CREDENTIALS`
+setting in addition to any other configuration that you use::
+
+    app.config['CORS_SUPPORTS_CREDENTIALS'] = True
 
 Uvicorn, Daphne, and other ASGI servers
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -560,10 +664,10 @@ explicitly, the ``async_mode`` option can be given in the constructor::
 
     sio = socketio.Server(async_mode='eventlet')
 
-A server configured for eventlet is deployed as a regular WSGI application,
-using the provided ``socketio.Middleware``::
+A server configured for eventlet is deployed as a regular WSGI application
+using the provided ``socketio.WSGIApp``::
 
-    app = socketio.Middleware(sio)
+    app = socketio.WSGIApp(sio)
     import eventlet
     eventlet.wsgi.server(eventlet.listen(('', 8000)), app)
 
@@ -602,10 +706,10 @@ option can be given in the constructor::
 
     sio = socketio.Server(async_mode='gevent')
 
-A server configured for gevent is deployed as a regular WSGI application,
-using the provided ``socketio.Middleware``::
+A server configured for gevent is deployed as a regular WSGI application
+using the provided ``socketio.WSGIApp``::
 
-    app = socketio.Middleware(sio)
+    app = socketio.WSGIApp(sio)
     from gevent import pywsgi
     pywsgi.WSGIServer(('', 8000), app).serve_forever()
 
@@ -614,7 +718,7 @@ follows::
 
     from gevent import pywsgi
     from geventwebsocket.handler import WebSocketHandler
-    app = socketio.Middleware(sio)
+    app = socketio.WSGIApp(sio)
     pywsgi.WSGIServer(('', 8000), app,
                       handler_class=WebSocketHandler).serve_forever()
 
@@ -687,7 +791,7 @@ development web server based on Werkzeug::
 
     sio = socketio.Server(async_mode='threading')
     app = Flask(__name__)
-    app.wsgi_app = socketio.Middleware(sio, app.wsgi_app)
+    app.wsgi_app = socketio.WSGIApp(sio, app.wsgi_app)
 
     # ... Socket.IO and Flask handler functions ...
 

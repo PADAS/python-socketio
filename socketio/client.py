@@ -1,6 +1,7 @@
 import itertools
 import logging
 import random
+import signal
 
 import engineio
 import six
@@ -10,6 +11,21 @@ from . import namespace
 from . import packet
 
 default_logger = logging.getLogger('socketio.client')
+reconnecting_clients = []
+
+
+def signal_handler(sig, frame):  # pragma: no cover
+    """SIGINT handler.
+
+    Notify any clients that are in a reconnect loop to abort. Other
+    disconnection tasks are handled at the engine.io level.
+    """
+    for client in reconnecting_clients[:]:
+        client._reconnect_abort.set()
+    return original_signal_handler(sig, frame)
+
+
+original_signal_handler = signal.signal(signal.SIGINT, signal_handler)
 
 
 class Client(object):
@@ -94,6 +110,7 @@ class Client(object):
         self.connection_transports = None
         self.connection_namespaces = None
         self.socketio_path = None
+        self.sid = None
 
         self.namespaces = []
         self.handlers = {}
@@ -101,6 +118,7 @@ class Client(object):
         self.callbacks = {}
         self._binary_packet = None
         self._reconnect_task = None
+        self._reconnect_abort = self.eio.create_event()
 
     def is_asyncio_based(self):
         return False
@@ -149,6 +167,41 @@ class Client(object):
         if handler is None:
             return set_handler
         set_handler(handler)
+
+    def event(self, *args, **kwargs):
+        """Decorator to register an event handler.
+
+        This is a simplified version of the ``on()`` method that takes the
+        event name from the decorated function.
+
+        Example usage::
+
+            @sio.event
+            def my_event(data):
+                print('Received data: ', data)
+
+        The above example is equivalent to::
+
+            @sio.on('my_event')
+            def my_event(data):
+                print('Received data: ', data)
+
+        A custom namespace can be given as an argument to the decorator::
+
+            @sio.event(namespace='/test')
+            def my_event(data):
+                print('Received data: ', data)
+        """
+        if len(args) == 1 and len(kwargs) == 0 and callable(args[0]):
+            # the decorator was invoked without arguments
+            # args[0] is the decorated function
+            return self.on(args[0].__name__)(args[0])
+        else:
+            # the decorator was invoked with arguments
+            def set_handler(handler):
+                return self.on(handler.__name__, *args, **kwargs)(handler)
+
+            return set_handler
 
     def register_namespace(self, namespace_handler):
         """Register a namespace handler object.
@@ -314,7 +367,7 @@ class Client(object):
             raise exceptions.TimeoutError()
         return callback_args[0] if len(callback_args[0]) > 1 \
             else callback_args[0][0] if len(callback_args[0]) == 1 \
-                else None
+            else None
 
     def disconnect(self):
         """Disconnect from the server."""
@@ -450,6 +503,8 @@ class Client(object):
                 event, *args)
 
     def _handle_reconnect(self):
+        self._reconnect_abort.clear()
+        reconnecting_clients.append(self)
         attempt_count = 0
         current_delay = self.reconnection_delay
         while True:
@@ -461,7 +516,10 @@ class Client(object):
             self.logger.info(
                 'Connection failed, new attempt in {:.02f} seconds'.format(
                     delay))
-            self.sleep(delay)
+            print('***', self._reconnect_abort.wait)
+            if self._reconnect_abort.wait(delay):
+                self.logger.info('Reconnect task aborted')
+                break
             attempt_count += 1
             try:
                 self.connect(self.connection_url,
@@ -480,10 +538,12 @@ class Client(object):
                 self.logger.info(
                     'Maximum reconnection attempts reached, giving up')
                 break
+        reconnecting_clients.remove(self)
 
-    def _handle_eio_connect(self):  # pragma: no cover
+    def _handle_eio_connect(self):
         """Handle the Engine.IO connection event."""
         self.logger.info('Engine.IO connection established')
+        self.sid = self.eio.sid
 
     def _handle_eio_message(self, data):
         """Dispatch Engine.IO messages."""
@@ -521,6 +581,7 @@ class Client(object):
         self._trigger_event('disconnect', namespace='/')
         self.callbacks = {}
         self._binary_packet = None
+        self.sid = None
         if self.eio.state == 'connected' and self.reconnection:
             self._reconnect_task = self.start_background_task(
                 self._handle_reconnect)

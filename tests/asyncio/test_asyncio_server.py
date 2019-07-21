@@ -10,7 +10,7 @@ if six.PY3:
 else:
     import mock
 
-from socketio import asyncio_server, exceptions
+from socketio import asyncio_server
 from socketio import asyncio_namespace
 from socketio import exceptions
 from socketio import namespace
@@ -84,26 +84,42 @@ class TestAsyncServer(unittest.TestCase):
     def test_emit(self, eio):
         mgr = self._get_mock_manager()
         s = asyncio_server.AsyncServer(client_manager=mgr)
-        _run(s.emit('my event', {'foo': 'bar'}, room='room',
+        _run(s.emit('my event', {'foo': 'bar'}, to='room',
                     skip_sid='123', namespace='/foo', callback='cb'))
         s.manager.emit.mock.assert_called_once_with(
+            'my event', {'foo': 'bar'}, '/foo', room='room', skip_sid='123',
+            callback='cb')
+        _run(s.emit('my event', {'foo': 'bar'}, room='room',
+                    skip_sid='123', namespace='/foo', callback='cb'))
+        s.manager.emit.mock.assert_called_with(
             'my event', {'foo': 'bar'}, '/foo', room='room', skip_sid='123',
             callback='cb')
 
     def test_emit_default_namespace(self, eio):
         mgr = self._get_mock_manager()
         s = asyncio_server.AsyncServer(client_manager=mgr)
-        _run(s.emit('my event', {'foo': 'bar'}, room='room',
+        _run(s.emit('my event', {'foo': 'bar'}, to='room',
                     skip_sid='123', callback='cb'))
         s.manager.emit.mock.assert_called_once_with(
+            'my event', {'foo': 'bar'}, '/', room='room', skip_sid='123',
+            callback='cb')
+        _run(s.emit('my event', {'foo': 'bar'}, room='room',
+                    skip_sid='123', callback='cb'))
+        s.manager.emit.mock.assert_called_with(
             'my event', {'foo': 'bar'}, '/', room='room', skip_sid='123',
             callback='cb')
 
     def test_send(self, eio):
         mgr = self._get_mock_manager()
         s = asyncio_server.AsyncServer(client_manager=mgr)
-        _run(s.send('foo', 'room', '123', namespace='/foo', callback='cb'))
+        _run(s.send('foo', to='room', skip_sid='123', namespace='/foo',
+                    callback='cb'))
         s.manager.emit.mock.assert_called_once_with(
+            'message', 'foo', '/foo', room='room', skip_sid='123',
+            callback='cb')
+        _run(s.send('foo', room='room', skip_sid='123', namespace='/foo',
+                    callback='cb'))
+        s.manager.emit.mock.assert_called_with(
             'message', 'foo', '/foo', room='room', skip_sid='123',
             callback='cb')
 
@@ -134,7 +150,7 @@ class TestAsyncServer(unittest.TestCase):
         s = asyncio_server.AsyncServer(client_manager=mgr,
                                        async_handlers=False)
         self.assertRaises(RuntimeError, _run,
-            s.call('foo', sid='123', timeout=12))
+                          s.call('foo', sid='123', timeout=12))
 
     def test_enter_room(self, eio):
         mgr = self._get_mock_manager()
@@ -448,7 +464,8 @@ class TestAsyncServer(unittest.TestCase):
     def test_handle_event_binary_ack(self, eio):
         eio.return_value.send = AsyncMock()
         mgr = self._get_mock_manager()
-        s = asyncio_server.AsyncServer(client_manager=mgr, async_handlers=False)
+        s = asyncio_server.AsyncServer(client_manager=mgr,
+                                       async_handlers=False)
         s.manager.initialize(s)
         _run(s._handle_eio_message('123', '61-321["my message","a",'
                                           '{"_placeholder":true,"num":0}]'))
@@ -479,7 +496,8 @@ class TestAsyncServer(unittest.TestCase):
     def test_handle_event_with_ack_tuple(self, eio):
         eio.return_value.send = AsyncMock()
         mgr = self._get_mock_manager()
-        s = asyncio_server.AsyncServer(client_manager=mgr, async_handlers=False)
+        s = asyncio_server.AsyncServer(client_manager=mgr,
+                                       async_handlers=False)
         handler = mock.MagicMock(return_value=(1, '2', True))
         s.on('my message', handler)
         _run(s._handle_eio_message('123', '21000["my message","a","b","c"]'))
@@ -490,7 +508,8 @@ class TestAsyncServer(unittest.TestCase):
     def test_handle_event_with_ack_list(self, eio):
         eio.return_value.send = AsyncMock()
         mgr = self._get_mock_manager()
-        s = asyncio_server.AsyncServer(client_manager=mgr, async_handlers=False)
+        s = asyncio_server.AsyncServer(client_manager=mgr,
+                                       async_handlers=False)
         handler = mock.MagicMock(return_value=[1, '2', True])
         s.on('my message', handler)
         _run(s._handle_eio_message('123', '21000["my message","a","b","c"]'))
@@ -501,7 +520,8 @@ class TestAsyncServer(unittest.TestCase):
     def test_handle_event_with_ack_binary(self, eio):
         eio.return_value.send = AsyncMock()
         mgr = self._get_mock_manager()
-        s = asyncio_server.AsyncServer(client_manager=mgr, async_handlers=False)
+        s = asyncio_server.AsyncServer(client_manager=mgr,
+                                       async_handlers=False)
         handler = mock.MagicMock(return_value=b'foo')
         s.on('my message', handler)
         _run(s._handle_eio_message('123', '21000["my message","foo"]'))

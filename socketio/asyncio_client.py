@@ -218,7 +218,7 @@ class AsyncClient(client.Client):
             six.raise_from(exceptions.TimeoutError(), None)
         return callback_args[0] if len(callback_args[0]) > 1 \
             else callback_args[0][0] if len(callback_args[0]) == 1 \
-                else None
+            else None
 
     async def disconnect(self):
         """Disconnect from the server.
@@ -355,6 +355,8 @@ class AsyncClient(client.Client):
                 event, *args)
 
     async def _handle_reconnect(self):
+        self._reconnect_abort.clear()
+        client.reconnecting_clients.append(self)
         attempt_count = 0
         current_delay = self.reconnection_delay
         while True:
@@ -366,7 +368,12 @@ class AsyncClient(client.Client):
             self.logger.info(
                 'Connection failed, new attempt in {:.02f} seconds'.format(
                     delay))
-            await self.sleep(delay)
+            try:
+                await asyncio.wait_for(self._reconnect_abort.wait(), delay)
+                self.logger.info('Reconnect task aborted')
+                break
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
             attempt_count += 1
             try:
                 await self.connect(self.connection_url,
@@ -385,10 +392,12 @@ class AsyncClient(client.Client):
                 self.logger.info(
                     'Maximum reconnection attempts reached, giving up')
                 break
+        client.reconnecting_clients.remove(self)
 
-    def _handle_eio_connect(self):  # pragma: no cover
+    def _handle_eio_connect(self):
         """Handle the Engine.IO connection event."""
         self.logger.info('Engine.IO connection established')
+        self.sid = self.eio.sid
 
     async def _handle_eio_message(self, data):
         """Dispatch Engine.IO messages."""
@@ -421,11 +430,13 @@ class AsyncClient(client.Client):
     async def _handle_eio_disconnect(self):
         """Handle the Engine.IO disconnection event."""
         self.logger.info('Engine.IO connection dropped')
+        self._reconnect_abort.set()
         for n in self.namespaces:
             await self._trigger_event('disconnect', namespace=n)
         await self._trigger_event('disconnect', namespace='/')
         self.callbacks = {}
         self._binary_packet = None
+        self.sid = None
         if self.eio.state == 'connected' and self.reconnection:
             self._reconnect_task = self.start_background_task(
                 self._handle_reconnect)
