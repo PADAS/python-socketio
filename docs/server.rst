@@ -283,7 +283,7 @@ Class-Based Namespaces
 ----------------------
 
 As an alternative to the decorator-based event handlers, the event handlers
-that belong to a namespace can be created as methods of a subclass of 
+that belong to a namespace can be created as methods of a subclass of
 :class:`socketio.Namespace`::
 
     class MyCustomNamespace(socketio.Namespace):
@@ -322,7 +322,7 @@ the namespace class, then the event is ignored. All event names used in
 class-based namespaces must use characters that are legal in method names.
 
 As a convenience to methods defined in a class-based namespace, the namespace
-instance includes versions of several of the methods in the 
+instance includes versions of several of the methods in the
 :class:`socketio.Server` and :class:`socketio.AsyncServer` classes that default
 to the proper namespace when the ``namespace`` argument is not given.
 
@@ -349,7 +349,7 @@ personal room for each client is created and named with the ``sid`` assigned
 to the connection. The application is then free to create additional rooms and
 manage which clients are in them using the :func:`socketio.Server.enter_room`
 and :func:`socketio.Server.leave_room` methods. Clients can be in as many
-rooms as needed and can be moved between rooms as often as necessary. 
+rooms as needed and can be moved between rooms as often as necessary.
 
 ::
 
@@ -472,7 +472,7 @@ To use a Redis message queue, a Python Redis client must be installed::
     # socketio.AsyncServer class
     pip install aioredis
 
-The Redis queue is configured through the :class:`socketio.RedisManager` and 
+The Redis queue is configured through the :class:`socketio.RedisManager` and
 :class:`socketio.AsyncRedisManager` classes. These classes connect directly to
 the Redis store and use the queue's pub/sub functionality::
 
@@ -517,6 +517,39 @@ the correct URL for a given message queue.
 Note that Kombu currently does not support asyncio, so it cannot be used with
 the :class:`socketio.AsyncServer` class.
 
+Kafka
+~~~~~
+
+`Apache Kafka <https://kafka.apache.org/>`_ is supported through the
+`kafka-python <https://kafka-python.readthedocs.io/en/master/index.html>`_
+package::
+
+    pip install kafka-python
+
+Access to Kafka is configured through the :class:`socketio.KafkaManager`
+class::
+
+    mgr = socketio.KafkaManager('kafka://')
+    sio = socketio.Server(client_manager=mgr)
+
+Note that Kafka currently does not support asyncio, so it cannot be used with
+the :class:`socketio.AsyncServer` class.
+
+AioPika
+~~~~~~~
+
+A RabbitMQ message queue is supported in asyncio applications through the 
+`AioPika <https://aio-pika.readthedocs.io/en/latest/>`_ package::
+You need to install aio_pika with pip::
+
+    pip install aio_pika
+
+The RabbitMQ queue is configured through the
+:class:`socketio.AsyncAioPikaManager` class::
+
+    mgr = socketio.AsyncAioPikaManager('amqp://')
+    sio = socketio.AsyncServer(client_manager=mgr)
+
 Emitting from external processes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -528,7 +561,7 @@ example::
 
     # connect to the redis queue as an external process
     external_sio = socketio.RedisManager('redis://', write_only=True)
-    
+
     # emit an event
     external_sio.emit('my event', data={'foo': 'bar'}, room='my room')
 
@@ -823,3 +856,23 @@ multiple servers, the following conditions must be met:
 - The worker processes need to communicate with each other to coordinate
   complex operations such as broadcasts. This is done through a configured
   message queue. See the section on using message queues for details.
+
+Cross-Origin Controls
+---------------------
+
+For security reasons, this server enforces a same-origin policy by default. In
+practical terms, this means the following:
+
+- If an incoming HTTP or WebSocket request includes the ``Origin`` header,
+  this header must match the scheme and host of the connection URL. In case
+  of a mismatch, a 400 status code response is returned and the connection is
+  rejected.
+- No restrictions are imposed on incoming requests that do not include the
+  ``Origin`` header.
+
+If necessary, the ``cors_allowed_origins`` option can be used to allow other
+origins. This argument can be set to a string to set a single allowed origin, or
+to a list to allow multiple origins. A special value of ``'*'`` can be used to
+instruct the server to allow all origins, but this should be done with care, as
+this could make the server vulnerable to Cross-Site Request Forgery (CSRF)
+attacks.
