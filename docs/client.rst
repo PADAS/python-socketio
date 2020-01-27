@@ -65,12 +65,17 @@ or can also be coroutines::
     async def message(data):
         print('I received a message!')
 
-The ``connect`` and ``disconnect`` events are special; they are invoked
-automatically when a client connects or disconnects from the server::
+The ``connect``, ``connect_error`` and ``disconnect`` events are special; they 
+are invoked automatically when a client connects or disconnects from the
+server::
 
     @sio.event
     def connect():
         print("I'm connected!")
+
+    @sio.event
+    def connect_error():
+        print("The connection failed!")
 
     @sio.event
     def disconnect():
@@ -131,7 +136,7 @@ When a server emits an event to a client, it can optionally provide a
 callback function, to be invoked as a way of acknowledgment that the server
 has processed the event. While this is entirely managed by the server, the
 client can provide a list of return values that are to be passed on to the
-callback function set up by the server. This is achieves simply by returning
+callback function set up by the server. This is achieved simply by returning
 the desired values from the handler function::
 
     @sio.event
@@ -197,7 +202,7 @@ that belong to a namespace can be created as methods of a subclass of
 
     sio.register_namespace(MyCustomNamespace('/chat'))
 
-For asyncio based severs, namespaces must inherit from
+For asyncio based servers, namespaces must inherit from
 :class:`socketio.AsyncClientNamespace`, and can define event handlers as
 coroutines if desired::
 
@@ -263,7 +268,7 @@ Or in the ``asyncio`` version::
 For the convenience of the application, a helper function is provided to
 start a custom background task::
 
-    def my_background_task(my_argument)
+    def my_background_task(my_argument):
         # do some background work here!
         pass
 
@@ -274,7 +279,7 @@ positional or keyword arguments to invoke the function with.
 
 Here is the ``asyncio`` version::
 
-    async def my_background_task(my_argument)
+    async def my_background_task(my_argument):
         # do some background work here!
         pass
 
