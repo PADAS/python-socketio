@@ -21,7 +21,8 @@ class AsyncServer(server.Server):
                            is stored in an in-memory structure, so the use of
                            multiple connected servers is not possible.
     :param logger: To enable logging set to ``True`` or pass a logger object to
-                   use. To disable logging set to ``False``.
+                   use. To disable logging set to ``False``. Note that fatal
+                   errors are logged even when ``logger`` is ``False``.
     :param json: An alternative json module to use for encoding and decoding
                  packets. Custom json modules must have ``dumps`` and ``loads``
                  functions that are compatible with the standard library
@@ -64,7 +65,8 @@ class AsyncServer(server.Server):
                             default is ``True``.
     :param engineio_logger: To enable Engine.IO logging set to ``True`` or pass
                             a logger object to use. To disable logging set to
-                            ``False``.
+                            ``False``. Note that fatal errors are logged even
+                            when ``engineio_logger`` is ``False``.
     """
     def __init__(self, client_manager=None, logger=False, json=None,
                  async_handlers=True, **kwargs):
@@ -116,7 +118,13 @@ class AsyncServer(server.Server):
                              to always leave this parameter with its default
                              value of ``False``.
 
-        Note: this method is a coroutine.
+        Note: this method is not designed to be used concurrently. If multiple
+        tasks are emitting at the same time to the same client connection, then
+        messages composed of multiple packets may end up being sent in an
+        incorrect sequence. Use standard concurrency solutions (such as a Lock
+        object) to prevent this situation.
+
+        Note 2: this method is a coroutine.
         """
         namespace = namespace or '/'
         room = to or room
@@ -192,6 +200,14 @@ class AsyncServer(server.Server):
                              single server process is used. It is recommended
                              to always leave this parameter with its default
                              value of ``False``.
+
+        Note: this method is not designed to be used concurrently. If multiple
+        tasks are emitting at the same time to the same client connection, then
+        messages composed of multiple packets may end up being sent in an
+        incorrect sequence. Use standard concurrency solutions (such as a Lock
+        object) to prevent this situation.
+
+        Note 2: this method is a coroutine.
         """
         if not self.async_handlers:
             raise RuntimeError(
@@ -295,17 +311,26 @@ class AsyncServer(server.Server):
 
         return _session_context_manager(self, sid, namespace)
 
-    async def disconnect(self, sid, namespace=None):
+    async def disconnect(self, sid, namespace=None, ignore_queue=False):
         """Disconnect a client.
 
         :param sid: Session ID of the client.
         :param namespace: The Socket.IO namespace to disconnect. If this
                           argument is omitted the default namespace is used.
+        :param ignore_queue: Only used when a message queue is configured. If
+                             set to ``True``, the disconnect is processed
+                             locally, without broadcasting on the queue. It is
+                             recommended to always leave this parameter with
+                             its default value of ``False``.
 
         Note: this method is a coroutine.
         """
         namespace = namespace or '/'
-        if self.manager.is_connected(sid, namespace=namespace):
+        if ignore_queue:
+            delete_it = self.manager.is_connected(sid, namespace)
+        else:
+            delete_it = await self.manager.can_disconnect(sid, namespace)
+        if delete_it:
             self.logger.info('Disconnecting %s [%s]', sid, namespace)
             self.manager.pre_disconnect(sid, namespace=namespace)
             await self._send_packet(sid, packet.Packet(packet.DISCONNECT,
@@ -360,8 +385,10 @@ class AsyncServer(server.Server):
         # as a single argument
         if isinstance(data, tuple):
             data = list(data)
-        else:
+        elif data is not None:
             data = [data]
+        else:
+            data = []
         await self._send_packet(sid, packet.Packet(
             packet.EVENT, namespace=namespace, data=[event] + data, id=id,
             binary=None))
@@ -416,9 +443,11 @@ class AsyncServer(server.Server):
             namespace_list = [namespace]
         for n in namespace_list:
             if n != '/' and self.manager.is_connected(sid, n):
+                self.manager.pre_disconnect(sid, namespace=namespace)
                 await self._trigger_event('disconnect', n, sid)
                 self.manager.disconnect(sid, n)
         if namespace == '/' and self.manager.is_connected(sid, namespace):
+            self.manager.pre_disconnect(sid, namespace=namespace)
             await self._trigger_event('disconnect', '/', sid)
             self.manager.disconnect(sid, '/')
 

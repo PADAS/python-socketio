@@ -42,6 +42,7 @@ class TestAsyncServer(unittest.TestCase):
 
     def _get_mock_manager(self):
         mgr = mock.MagicMock()
+        mgr.can_disconnect = AsyncMock()
         mgr.emit = AsyncMock()
         mgr.close_room = AsyncMock()
         mgr.trigger_callback = AsyncMock()
@@ -228,6 +229,13 @@ class TestAsyncServer(unittest.TestCase):
                               namespace='/foo'))
         s.eio.send.mock.assert_called_once_with(
             '123', '2/foo,["my event",["foo","bar"]]', binary=False)
+
+    def test_emit_internal_with_none(self, eio):
+        eio.return_value.send = AsyncMock()
+        s = asyncio_server.AsyncServer()
+        _run(s._emit_internal('123', 'my event', None, namespace='/foo'))
+        s.eio.send.mock.assert_called_once_with(
+            '123', '2/foo,["my event"]', binary=False)
 
     def test_emit_internal_with_callback(self, eio):
         eio.return_value.send = AsyncMock()
@@ -614,6 +622,15 @@ class TestAsyncServer(unittest.TestCase):
         s = asyncio_server.AsyncServer()
         _run(s._handle_eio_connect('123', 'environ'))
         _run(s.disconnect('123'))
+        s.eio.send.mock.assert_any_call('123', '1', binary=False)
+        s.eio.disconnect.mock.assert_called_once_with('123')
+
+    def test_disconnect_ignore_queue(self, eio):
+        eio.return_value.send = AsyncMock()
+        eio.return_value.disconnect = AsyncMock()
+        s = asyncio_server.AsyncServer()
+        _run(s._handle_eio_connect('123', 'environ'))
+        _run(s.disconnect('123', ignore_queue=True))
         s.eio.send.mock.assert_any_call('123', '1', binary=False)
         s.eio.disconnect.mock.assert_called_once_with('123')
 

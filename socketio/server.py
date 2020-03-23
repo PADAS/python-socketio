@@ -23,7 +23,8 @@ class Server(object):
                            multiple connected servers is not possible.
     :param logger: To enable logging set to ``True`` or pass a logger object to
                    use. To disable logging set to ``False``. The default is
-                   ``False``.
+                   ``False``. Note that fatal errors are logged even when
+                   ``logger`` is ``False``.
     :param binary: ``True`` to support binary payloads, ``False`` to treat all
                    payloads as text. On Python 2, if this is set to ``True``,
                    ``unicode`` values are treated as text, and ``str`` and
@@ -92,7 +93,9 @@ class Server(object):
                             default is ``True``.
     :param engineio_logger: To enable Engine.IO logging set to ``True`` or pass
                             a logger object to use. To disable logging set to
-                            ``False``. The default is ``False``.
+                            ``False``. The default is ``False``. Note that
+                            fatal errors are logged even when
+                            ``engineio_logger`` is ``False``.
     """
     def __init__(self, client_manager=None, logger=False, binary=False,
                  json=None, async_handlers=True, always_connect=False,
@@ -277,6 +280,12 @@ class Server(object):
                              single server process is used. It is recommended
                              to always leave this parameter with its default
                              value of ``False``.
+
+        Note: this method is not thread safe. If multiple threads are emitting
+        at the same time to the same client, then messages composed of
+        multiple packets may end up being sent in an incorrect sequence. Use
+        standard concurrency solutions (such as a Lock object) to prevent this
+        situation.
         """
         namespace = namespace or '/'
         room = to or room
@@ -349,6 +358,12 @@ class Server(object):
                              single server process is used. It is recommended
                              to always leave this parameter with its default
                              value of ``False``.
+
+        Note: this method is not thread safe. If multiple threads are emitting
+        at the same time to the same client, then messages composed of
+        multiple packets may end up being sent in an incorrect sequence. Use
+        standard concurrency solutions (such as a Lock object) to prevent this
+        situation.
         """
         if not self.async_handlers:
             raise RuntimeError(
@@ -489,15 +504,24 @@ class Server(object):
 
         return _session_context_manager(self, sid, namespace)
 
-    def disconnect(self, sid, namespace=None):
+    def disconnect(self, sid, namespace=None, ignore_queue=False):
         """Disconnect a client.
 
         :param sid: Session ID of the client.
         :param namespace: The Socket.IO namespace to disconnect. If this
                           argument is omitted the default namespace is used.
+        :param ignore_queue: Only used when a message queue is configured. If
+                             set to ``True``, the disconnect is processed
+                             locally, without broadcasting on the queue. It is
+                             recommended to always leave this parameter with
+                             its default value of ``False``.
         """
         namespace = namespace or '/'
-        if self.manager.is_connected(sid, namespace=namespace):
+        if ignore_queue:
+            delete_it = self.manager.is_connected(sid, namespace)
+        else:
+            delete_it = self.manager.can_disconnect(sid, namespace)
+        if delete_it:
             self.logger.info('Disconnecting %s [%s]', sid, namespace)
             self.manager.pre_disconnect(sid, namespace=namespace)
             self._send_packet(sid, packet.Packet(packet.DISCONNECT,
@@ -570,8 +594,10 @@ class Server(object):
         # as a single argument
         if isinstance(data, tuple):
             data = list(data)
-        else:
+        elif data is not None:
             data = [data]
+        else:
+            data = []
         self._send_packet(sid, packet.Packet(packet.EVENT, namespace=namespace,
                                              data=[event] + data, id=id,
                                              binary=binary))
@@ -626,9 +652,11 @@ class Server(object):
             namespace_list = [namespace]
         for n in namespace_list:
             if n != '/' and self.manager.is_connected(sid, n):
+                self.manager.pre_disconnect(sid, namespace=namespace)
                 self._trigger_event('disconnect', n, sid)
                 self.manager.disconnect(sid, n)
         if namespace == '/' and self.manager.is_connected(sid, namespace):
+            self.manager.pre_disconnect(sid, namespace=namespace)
             self._trigger_event('disconnect', '/', sid)
             self.manager.disconnect(sid, '/')
 

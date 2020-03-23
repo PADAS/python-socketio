@@ -219,6 +219,12 @@ class TestServer(unittest.TestCase):
                                            '2/foo,["my event",["foo","bar"]]',
                                            binary=False)
 
+    def test_emit_internal_with_none(self, eio):
+        s = server.Server()
+        s._emit_internal('123', 'my event', None, namespace='/foo')
+        s.eio.send.assert_called_once_with('123', '2/foo,["my event"]',
+                                           binary=False)
+
     def test_emit_internal_with_callback(self, eio):
         s = server.Server()
         id = s.manager._generate_ack_id('123', '/foo', 'cb')
@@ -545,6 +551,12 @@ class TestServer(unittest.TestCase):
         s = server.Server()
         s._handle_eio_connect('123', 'environ')
         s.disconnect('123')
+        s.eio.send.assert_any_call('123', '1', binary=False)
+
+    def test_disconnect_ignore_queue(self, eio):
+        s = server.Server()
+        s._handle_eio_connect('123', 'environ')
+        s.disconnect('123', ignore_queue=True)
         s.eio.send.assert_any_call('123', '1', binary=False)
 
     def test_disconnect_namespace(self, eio):
